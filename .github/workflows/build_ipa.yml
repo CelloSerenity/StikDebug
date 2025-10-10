@@ -7,25 +7,23 @@ on:
     branches: [ "main" ]
   workflow_dispatch:
 
+permissions:
+  contents: write  
+  
 jobs:
   build:
     name: Build Debug IPA
-    runs-on: macos-14
+    runs-on: macos-latest  
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Xcode
+      - name: Setup Xcode (latest stable)
         uses: maxim-lobanov/setup-xcode@v1
         with:
-          xcode-version: 'latest'
-
-      - name: Fix Project Format
-        run: |
-          sed -i '' 's/objectVersion = 77/objectVersion = 56/' StikDebug.xcodeproj/project.pbxproj
-          sed -i '' 's/preferredProjectObjectVersion = 77/preferredProjectObjectVersion = 56/' StikDebug.xcodeproj/project.pbxproj
-
+          xcode-version: 'latest-stable' 
+          
       - name: Archive Build (Debug, Unsigned)
         run: |
           xcodebuild clean archive \
@@ -44,18 +42,29 @@ jobs:
 
       - name: Create IPA from Archive
         run: |
-          # Copy the .app from the archive
           cp -R build/StikDebug.xcarchive/Products/Applications/StikDebug.app .
-
-          # Package the app into an IPA
           mkdir -p Payload
           cp -R StikDebug.app Payload/
           zip -r StikDebug.ipa Payload
           rm -rf Payload StikDebug.app
 
-      - name: Upload Debug IPA
+      - name: Upload Debug IPA (artifact)
         uses: actions/upload-artifact@v4
         with:
           name: StikDebug-Debug.ipa
           path: StikDebug.ipa
           retention-days: 90
+
+      - name: Create or Update GitHub Release (GitHub-Alpha)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: GitHub-Alpha
+          name: GitHub-Alpha
+          prerelease: true
+          generate_release_notes: true
+          target_commitish: ${{ github.sha }}
+          files: |
+            StikDebug.ipa
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

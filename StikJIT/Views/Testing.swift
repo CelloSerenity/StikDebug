@@ -1,6 +1,6 @@
 //
 //  Testing.swift
-//  StikDebug 2
+//  StikDebug
 //
 //  Created by Stephen Bove on 8/8/25.
 //
@@ -9,7 +9,7 @@ import SwiftUI
 import Foundation
 import UniformTypeIdentifiers
 import ZIPFoundation
-import Zsign
+import ZSign
 import StikImporter
 import UIKit
 import PhotosUI
@@ -364,6 +364,18 @@ final class AppSignerManager: ObservableObject {
                     try? FileManager.default.copyItem(at: icon1024URL, to: previewDest)
                 }
                 
+                let pw = KeychainHelper.shared.readPassword(forKey: cert.id.uuidString) ?? ""
+                let rc = zsign(
+                    appFolder.path,
+                    cert.p12URL.path,
+                    cert.p12URL.path,
+                    cert.mobURL?.path ?? "",
+                    pw
+                )
+                guard rc == 0 else {
+                    throw NSError(domain: "zsign", code: Int(rc),
+                                  userInfo: [NSLocalizedDescriptionKey: "zsign returned \(rc)"])
+                }
                 
                 let outDir = docs.appendingPathComponent("SignedApps/\(newName)", isDirectory: true)
                 if FileManager.default.fileExists(atPath: outDir.path) { try FileManager.default.removeItem(at: outDir) }
@@ -528,6 +540,20 @@ struct GlassIconButtonStyle: ButtonStyle {
     }
 }
 
+// Small capsule "BETA" tag for nav bar
+private struct BetaTag: View {
+    var body: some View {
+        Text("BETA")
+            .font(.caption2.weight(.bold))
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(Color.orange.opacity(0.9), in: Capsule())
+            .foregroundStyle(.white)
+            .overlay(Capsule().stroke(.white.opacity(0.2), lineWidth: 1))
+            .accessibilityLabel("Beta")
+    }
+}
+
 // MARK: - Custom glassy tab switcher (Repos disabled; only Testing)
 
 enum ManagerSection: String, CaseIterable, Identifiable {
@@ -540,7 +566,7 @@ enum ManagerSection: String, CaseIterable, Identifiable {
 
 struct GlassLiquidTabSwitcher: View {
     @Binding var selection: ManagerSection
-    var accent: Color = .blue
+    var accent: Color = .white
     var height: CGFloat = 56
     
     private let pad: CGFloat = 6
@@ -600,6 +626,7 @@ private struct CertPickerSheet: View {
     let certs: [Certificate]
     @Binding var selectedID: UUID?
     var onAdd: () -> Void
+    var onDelete: (Certificate) -> Void
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
@@ -617,6 +644,12 @@ private struct CertPickerSheet: View {
                         }
                         .contentShape(Rectangle())
                         .onTapGesture { selectedID = cert.id; dismiss() }
+                    }
+                    .onDelete { idx in
+                        for i in idx {
+                            let c = certs[i]
+                            onDelete(c)
+                        }
                     }
                     Button {
                         dismiss()
@@ -685,9 +718,17 @@ private struct ManageCertsView: View {
 
 struct IPAAppManagerView: View {
     @AppStorage("customAccentColor") private var customAccentColorHex: String = ""
+    @AppStorage("appTheme") private var appThemeRaw: String = AppTheme.system.rawValue
     @Environment(\.themeExpansionManager) private var themeExpansion
-    private var accent: Color {
+
+    private var accentColor: Color {
         themeExpansion?.resolvedAccentColor(from: customAccentColorHex) ?? .blue
+    }
+    private var backgroundStyle: BackgroundStyle {
+        themeExpansion?.backgroundStyle(for: appThemeRaw) ?? AppTheme.system.backgroundStyle
+    }
+    private var preferredScheme: ColorScheme? {
+        themeExpansion?.preferredColorScheme(for: appThemeRaw)
     }
     
     @StateObject private var mgr = AppSignerManager()
@@ -720,16 +761,8 @@ struct IPAAppManagerView: View {
     var body: some View {
         NavigationStack {
             ZStack {
-                // Subtle depth gradient background
-                LinearGradient(
-                    gradient: Gradient(colors: [
-                        Color(UIColor.systemBackground),
-                        Color(UIColor.secondarySystemBackground)
-                    ]),
-                    startPoint: .topLeading,
-                    endPoint: .bottomTrailing
-                )
-                .ignoresSafeArea()
+                ThemedBackground(style: backgroundStyle)
+                    .ignoresSafeArea()
                 
                 ScrollViewReader { proxy in
                     ScrollView {
@@ -740,7 +773,6 @@ struct IPAAppManagerView: View {
                             // Only Testing section
                             signCard.id(signCardAnchor)
                             appsCard
-                            versionInfo
                         }
                         .padding(.horizontal, 16)
                         .padding(.vertical, 20)
@@ -774,6 +806,11 @@ struct IPAAppManagerView: View {
             // Show nav bar title again
             .navigationTitle("Testing")
             .navigationBarTitleDisplayMode(.large)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    BetaTag()
+                }
+            }
             .stikImporter(isPresented: $pickerShown,
                           selectedURLs: .constant([]),
                           allowedContentTypes: [.item],
@@ -789,7 +826,7 @@ struct IPAAppManagerView: View {
                 }
             }
             .sheet(isPresented: $showAddCert) {
-                AddCertView(accent: accent) { n, p12, mob, pw in
+                AddCertView(accent: accentColor) { n, p12, mob, pw in
                     mgr.addCertificate(name: n, p12: p12, mob: mob, password: pw,
                                        onErr: fail, onOK: notify)
                 }
@@ -799,6 +836,8 @@ struct IPAAppManagerView: View {
                                 selected: $mgr.selectedCertID,
                                 onDelete: { cert in mgr.deleteCert(cert) })
             }
+            .tint(accentColor)
+            .preferredColorScheme(preferredScheme)
             // Photos picker → temp PNG saved → advIconURL
             .onChange(of: photoItem) { newItem in
                 guard let newItem else { return }
@@ -867,7 +906,8 @@ struct IPAAppManagerView: View {
                     CertPickerSheet(
                         certs: mgr.certs,
                         selectedID: $mgr.selectedCertID,
-                        onAdd: { showAddCert = true }
+                        onAdd: { showAddCert = true },
+                        onDelete: { cert in mgr.deleteCert(cert) }
                     )
                 }
                 
@@ -970,12 +1010,12 @@ struct IPAAppManagerView: View {
                 
                 Button("Prepare") { mgr.signIPA(onErr: fail, onOK: notify) }
                     .frame(maxWidth: .infinity, minHeight: 48)
-                    .background(accent, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    .background(accentColor, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                     .overlay(
                         RoundedRectangle(cornerRadius: 12, style: .continuous)
                             .stroke(.white.opacity(0.18), lineWidth: 1)
                     )
-                    .foregroundColor(accent.contrastText())
+                    .foregroundColor(accentColor.contrastText())
                     // Removed glow/shadow from the Prepare button
                     .disabled(mgr.busy || mgr.ipaURL == nil || mgr.selectedCertID == nil)
             }
@@ -1056,18 +1096,7 @@ struct IPAAppManagerView: View {
             .padding(8)
         }
     }
-    
-    private var versionInfo: some View {
-        HStack {
-            Spacer()
-            Text("iOS \(UIDevice.current.systemVersion)")
-                .font(.footnote)
-                .foregroundStyle(.secondary)
-            Spacer()
-        }
-        .padding(.top, 6)
-    }
-    
+        
     // MARK: - Helpers (CustomErrorView)
 
     private func fail(_ title: String, _ msg: String) {
@@ -1138,6 +1167,7 @@ private struct AddCertView: View {
                 }
             }
         }
+        .tint(accent)
     }
     
     private func importRow(label: String, picked: Bool,

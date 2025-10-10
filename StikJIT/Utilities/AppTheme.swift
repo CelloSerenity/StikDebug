@@ -43,8 +43,7 @@ enum AppTheme: String, CaseIterable, Identifiable {
     var preferredColorScheme: ColorScheme? {
         switch self {
         case .system:
-            // Make the default theme use a dark appearance to match Obsidian.
-            return .dark
+            return nil
         case .sunset, .forest:
             return nil
         case .darkStatic, .neonAnimated, .blobs, .particles, .aurora, .ocean, .midnight, .cyberwave:
@@ -55,8 +54,8 @@ enum AppTheme: String, CaseIterable, Identifiable {
     var backgroundStyle: BackgroundStyle {
         switch self {
         case .system:
-            // Make the default theme render with the Obsidian gradient.
-            return .staticGradient(colors: Palette.obsidianGradient)
+            return .adaptiveGradient(light: Palette.systemLightGradient,
+                                     dark: Palette.systemDarkGradient)
         case .darkStatic:
             return .staticGradient(colors: Palette.obsidianGradient)
         case .neonAnimated:
@@ -89,10 +88,13 @@ enum BackgroundStyle: Equatable {
     case blobs(colors: [Color], background: [Color])
     case particles(particle: Color, background: [Color])
     case customGradient(colors: [Color])
+    case adaptiveGradient(light: [Color], dark: [Color])
 }
 
 private struct Palette {
     static let defaultGradient = hexColors("#1C1F3A", "#3E4C7C", "#1F1C2C")
+    static let systemLightGradient = hexColors("#F6F8FF", "#E3ECFF", "#F0F4FF")
+    static let systemDarkGradient = obsidianGradient
     static let obsidianGradient = hexColors("#000000", "#1C1C1C", "#262626")
     static let neon = hexColors("#00F5A0", "#00D9F5", "#C96BFF")
     static let hazeBlobs = hexColors("#FF8BA7", "#A98BFF", "#70C8FF", "#67FFDA")
@@ -126,7 +128,12 @@ private func staticGradientView(colors: [Color]) -> some View {
 struct ThemedBackground: View {
     let style: BackgroundStyle
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    
+    @Environment(\.colorScheme) private var colorScheme
+
+    private var identity: String {
+        style.identityKey
+    }
+
     var body: some View {
         Group {
             switch style {
@@ -157,8 +164,13 @@ struct ThemedBackground: View {
             case .customGradient(let colors):
                 staticGradientView(colors: colors)
                     .ignoresSafeArea()
+            case .adaptiveGradient(let light, let dark):
+                let colors = colorScheme == .dark ? dark : light
+                staticGradientView(colors: colors)
+                    .ignoresSafeArea()
             }
         }
+        .id(identity)
     }
 }
 
@@ -205,6 +217,10 @@ private struct AnimatedGradientBackground: View {
             let gradientColors = colors.ensureMinimumCount()
 
             Rectangle()
+                .fill(.ultraThinMaterial)
+                .ignoresSafeArea(edges: .top)
+                .ignoresSafeArea(edges: .bottom)
+                .background(Rectangle()
                 .fill(
                     AngularGradient(colors: gradientColors + [gradientColors.first!], center: .center, angle: .degrees(0))
                 )
@@ -215,7 +231,7 @@ private struct AnimatedGradientBackground: View {
                 .overlay(
                     LinearGradient(colors: [.black.opacity(0.25), .clear], startPoint: .top, endPoint: .bottom)
                         .ignoresSafeArea()
-                )
+                ))
         }
     }
 }
@@ -322,8 +338,15 @@ private struct ParticleFieldBackground: View {
                     }
                 }
                 .task {
-                    while true {
-                        try? await Task.sleep(nanoseconds: 16_000_000)
+                    while !Task.isCancelled {
+                        do {
+                            try await Task.sleep(nanoseconds: 16_000_000)
+                        } catch is CancellationError {
+                            break
+                        } catch {
+                            break
+                        }
+                        guard !Task.isCancelled else { break }
                         var next = particles
                         for i in next.indices {
                             var p = next[i]
@@ -351,5 +374,38 @@ private extension Array where Element == Color {
         if isEmpty { return [.blue, .purple] }
         if count == 1 { return [self[0], self[0].opacity(0.6)] }
         return self
+    }
+
+    var identityKey: String {
+        map { $0.identityKey }.joined(separator: ",")
+    }
+}
+
+private extension BackgroundStyle {
+    var identityKey: String {
+        switch self {
+        case .staticGradient(let colors):
+            return "static:\(colors.identityKey)"
+        case .animatedGradient(let colors, let speed):
+            return "animated:\(String(format: "%.4f", speed)):\(colors.identityKey)"
+        case .blobs(let colors, let background):
+            return "blobs:\(colors.identityKey)|bg:\(background.identityKey)"
+        case .particles(let particle, let background):
+            return "particles:\(particle.identityKey)|bg:\(background.identityKey)"
+        case .customGradient(let colors):
+            return "custom:\(colors.identityKey)"
+        case .adaptiveGradient(let light, let dark):
+            return "adaptive:l=\(light.identityKey)|d=\(dark.identityKey)"
+        }
+    }
+}
+
+private extension Color {
+    var identityKey: String {
+        if let hex = toHex() {
+            return hex
+        }
+        // Fallback to descriptive string when hex can't be produced (e.g. dynamic colors)
+        return String(describing: self)
     }
 }
