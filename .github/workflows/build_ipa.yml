@@ -24,6 +24,11 @@ jobs:
         with:
           xcode-version: 'latest-stable' 
           
+      - name: Show Xcode info
+        run: |
+          xcodebuild -version
+          xcodebuild -showsdks
+
       - name: Archive Build (Debug, Unsigned)
         run: |
           xcodebuild clean archive \
@@ -32,7 +37,6 @@ jobs:
             -configuration Debug \
             -archivePath build/StikDebug.xcarchive \
             -sdk iphoneos \
-            -destination 'generic/platform=iOS' \
             ONLY_ACTIVE_ARCH=NO \
             CODE_SIGN_IDENTITY="" \
             CODE_SIGNING_REQUIRED=NO \
