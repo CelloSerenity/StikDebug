@@ -24,6 +24,8 @@
 		<string>audio</string>
 		<string>processing</string>
 	</array>
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
 	<key>UIFileSharingEnabled</key>
 	<true/>
 </dict>
