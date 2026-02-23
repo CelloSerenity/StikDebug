@@ -24,7 +24,7 @@ jobs:
       - name: Setup Xcode (latest stable)
         uses: maxim-lobanov/setup-xcode@v1
         with:
-          xcode-version: '26.0.1' 
+          xcode-version: '26.2' 
           
       - name: Archive Build (Debug, Unsigned)
         run: |
