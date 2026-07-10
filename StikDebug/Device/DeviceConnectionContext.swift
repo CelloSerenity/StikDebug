@@ -2,8 +2,6 @@
 //  DeviceConnectionContext.swift
 //  StikDebug
 //
-//  Created by Stephen.
-//
 
 import Foundation
 

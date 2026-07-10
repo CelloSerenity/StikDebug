@@ -5,6 +5,7 @@
 
 import SwiftUI
 import UIKit
+import ImageIO
 
 enum AppIconRepository {
     private static let memory: NSCache<NSString, UIImage> = {
@@ -15,9 +16,24 @@ enum AppIconRepository {
     }()
 
     private static let diskQueue = DispatchQueue(label: "com.stik.iconcache.disk", qos: .utility)
+    /// Allow a few concurrent icon fetches so list scrolling doesn't serialize behind one request.
     private static let fetchSemaphore = AsyncSemaphore(permits: 4)
     private static let registry = IconFetchRegistry()
     private static let appGroupIdentifier = "group.com.stik.sj"
+    private static let thumbnailPixelSize = 180
+    private static let iconDirectory: URL? = {
+        guard let container = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: appGroupIdentifier) else {
+            return nil
+        }
+
+        let directory = container.appendingPathComponent("icons", isDirectory: true)
+        do {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            return directory
+        } catch {
+            return nil
+        }
+    }()
 
     static func cachedImage(for bundleID: String) -> UIImage? {
         memory.object(forKey: bundleID as NSString)
@@ -37,9 +53,16 @@ enum AppIconRepository {
     }
 
     static func prefetch(bundleIDs: [String]) {
-        for bundleID in Set(bundleIDs) {
-            Task.detached(priority: .utility) {
-                _ = await image(for: bundleID)
+        let unique = Array(Set(bundleIDs))
+        guard !unique.isEmpty else { return }
+
+        Task.detached(priority: .utility) {
+            await withTaskGroup(of: Void.self) { group in
+                for bundleID in unique {
+                    group.addTask {
+                        _ = await image(for: bundleID)
+                    }
+                }
             }
         }
     }
@@ -50,8 +73,9 @@ enum AppIconRepository {
                 await fetchSemaphore.acquire()
 
                 let result: UIImage?
-                if let fetched = await fetchFromSource(bundleID: bundleID) {
-                    let prepared = prepareForDisplay(fetched)
+                if let data = await fetchFromSource(bundleID: bundleID),
+                   let thumbnail = makeThumbnail(from: data) {
+                    let prepared = prepareForDisplay(thumbnail)
                     store(prepared, for: bundleID)
                     result = prepared
                 } else {
@@ -67,17 +91,15 @@ enum AppIconRepository {
         return await task.value
     }
 
-    private static func fetchFromSource(bundleID: String) async -> UIImage? {
+    private static func fetchFromSource(bundleID: String) async -> Data? {
         await withCheckedContinuation { continuation in
-            AppStoreIconFetcher.getIcon(for: bundleID) { image in
-                continuation.resume(returning: image)
+            AppStoreIconFetcher.getIconData(for: bundleID) { data in
+                continuation.resume(returning: data)
             }
         }
     }
 
     private static func loadFromDisk(bundleID: String) async -> UIImage? {
-        let imageScale = await MainActor.run { UIScreen.main.scale }
-
         return await withCheckedContinuation { (continuation: CheckedContinuation<UIImage?, Never>) in
             diskQueue.async {
                 guard let url = iconURL(for: bundleID),
@@ -92,7 +114,7 @@ enum AppIconRepository {
                     return
                 }
 
-                guard let image = UIImage(data: data, scale: imageScale) else {
+                guard let image = makeThumbnail(from: data) else {
                     try? FileManager.default.removeItem(at: url)
                     continuation.resume(returning: nil)
                     return
@@ -124,18 +146,10 @@ enum AppIconRepository {
     }
 
     private static func iconURL(for bundleID: String) -> URL? {
-        guard let container = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: appGroupIdentifier),
+        guard let directory = iconDirectory,
               let fileName = cacheFileName(for: bundleID) else {
             return nil
         }
-
-        let directory = container.appendingPathComponent("icons", isDirectory: true)
-        do {
-            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        } catch {
-            return nil
-        }
-
         return directory.appendingPathComponent(fileName)
     }
 
@@ -161,6 +175,23 @@ enum AppIconRepository {
     private static func prepareForDisplay(_ image: UIImage) -> UIImage {
         image.preparingForDisplay() ?? image
     }
+
+    private static func makeThumbnail(from data: Data) -> UIImage? {
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil) else {
+            return nil
+        }
+
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: thumbnailPixelSize,
+            kCGImageSourceShouldCacheImmediately: true
+        ]
+        guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else {
+            return nil
+        }
+        return UIImage(cgImage: image)
+    }
 }
 
 @MainActor
@@ -172,33 +203,21 @@ final class IconLoader: ObservableObject {
 
     init(bundleID: String) {
         self.bundleID = bundleID
-        if let cached = AppIconRepository.cachedImage(for: bundleID) {
-            image = cached
-            didStart = true
-        }
+        image = AppIconRepository.cachedImage(for: bundleID)
+        didStart = image != nil
     }
 
     func beginLoading() {
-        if image != nil {
-            didStart = true
-            return
-        }
-
-        guard !didStart else {
-            return
-        }
-
+        guard image == nil, !didStart else { return }
         didStart = true
         let targetID = bundleID
-
         Task { [weak self] in
-            if let resolved = await AppIconRepository.image(for: targetID) {
-                guard let self else { return }
-                withAnimation(.linear(duration: 0.12)) {
-                    self.image = resolved
-                }
+            let resolved = await AppIconRepository.image(for: targetID)
+            guard let self else { return }
+            if let resolved {
+                self.image = resolved
             } else {
-                self?.didStart = false
+                self.didStart = false
             }
         }
     }

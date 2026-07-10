@@ -7,78 +7,85 @@
 
 import SwiftUI
 import UIKit
-import WidgetKit
+
+enum InstalledAppsListMode: Hashable {
+    /// JIT-eligible apps only (Home / JIT tab).
+    case jit
+    /// Launch installed apps without attaching JIT (Tools).
+    case launch
+}
 
 struct InstalledAppsListView: View {
     @Environment(\.dismiss) private var dismiss
 
+    let mode: InstalledAppsListMode
     let onSelectApp: (String, String) -> Void
     let showDoneButton: Bool
     let onImportPairingFile: (() -> Void)?
-
-    private let sharedDefaults = UserDefaults(suiteName: ScriptStore.favoriteAppNamesSuiteName) ?? .standard
+    let isJITOperationInFlight: Bool
+    /// When false, assumes an outer NavigationStack (e.g. Tools push).
+    let embedsNavigation: Bool
 
     @StateObject private var viewModel = InstalledAppsViewModel()
 
     @AppStorage("recentApps") private var recentApps: [String] = []
-    @AppStorage("favoriteApps") private var favoriteApps: [String] = [] {
-        didSet {
-            favoriteApps = Array(favoriteApps.prefix(Self.maxFavorites))
-            persistIfChanged()
-        }
-    }
+    @AppStorage("favoriteApps") private var favoriteApps: [String] = []
     @AppStorage("loadAppIconsOnJIT") private var loadAppIconsOnJIT = true
     @AppStorage("pinnedSystemApps") private var pinnedSystemApps: [String] = []
     @AppStorage("pinnedSystemAppNames") private var pinnedSystemAppNames: [String: String] = [:]
 
     @State private var launchingBundles: Set<String> = []
-    @State private var launchFeedback: LaunchFeedback?
-    @State private var debuggableSearchText = ""
-    @State private var launchSearchText = ""
+    @State private var toast: StatusToast?
+    @State private var searchText = ""
     @State private var prefetchedBundleIDs: Set<String> = []
-    @State private var selectedTab: AppListTab = .debuggable
+    @State private var favoriteBundleSet: Set<String> = []
 
-    private static let maxFavorites = 4
-    private static let maxSystemPins = 8
-    private static let iconPrefetchLimit = 32
+    private static let iconPrefetchLimit = 24
 
     init(
+        mode: InstalledAppsListMode = .jit,
         onSelectApp: @escaping (String, String) -> Void,
         showDoneButton: Bool = true,
-        onImportPairingFile: (() -> Void)? = nil
+        onImportPairingFile: (() -> Void)? = nil,
+        isJITOperationInFlight: Bool = false,
+        embedsNavigation: Bool = true
     ) {
+        self.mode = mode
         self.onSelectApp = onSelectApp
         self.showDoneButton = showDoneButton
         self.onImportPairingFile = onImportPairingFile
+        self.isJITOperationInFlight = isJITOperationInFlight
+        self.embedsNavigation = embedsNavigation
     }
 
     var body: some View {
-        NavigationStack {
-            tabContent(for: selectedTab)
-                .transition(.opacity)
-                .transaction { transaction in
-                    transaction.disablesAnimations = true
+        Group {
+            if embedsNavigation {
+                NavigationStack {
+                    listRoot
                 }
-                .navigationTitle(selectedTab.navigationTitle)
-                .searchable(
-                    text: currentSearchBinding,
-                    placement: .navigationBarDrawer(displayMode: .always),
-                    prompt: selectedTab.searchPrompt
-                )
-                .toolbar {
-                    tabPickerToolbarItem
-                    leadingToolbarItem
-                    trailingToolbarItem
-                }
+            } else {
+                listRoot
+            }
         }
-        .overlay {
-            launchFeedbackOverlay
+        .statusToast($toast)
+        .onAppear {
+            favoriteBundleSet = Set(favoriteApps)
+            refreshIconPrefetch()
         }
-        .onAppear(perform: refreshIconPrefetch)
-        .onChange(of: favoriteApps) { _, _ in prefetchPriorityIcons() }
-        .onChange(of: recentApps) { _, _ in prefetchPriorityIcons() }
-        .onChange(of: selectedTab) { _, _ in prefetchPriorityIcons() }
-        .onChange(of: pinnedSystemApps) { _, _ in prefetchPriorityIcons() }
+        .onChange(of: favoriteApps) { _, newValue in
+            favoriteBundleSet = Set(newValue)
+            handleFavoritesChange()
+        }
+        .onChange(of: recentApps) { _, _ in
+            prefetchPriorityIcons()
+            syncLibraryPreferences()
+        }
+        .onChange(of: pinnedSystemApps) { _, _ in
+            prefetchPriorityIcons()
+            syncLibraryPreferences()
+        }
+        .onChange(of: pinnedSystemAppNames) { _, _ in syncLibraryPreferences() }
         .onChange(of: viewModel.isLoading) { _, isLoading in
             handleLoadingChange(isLoading)
         }
@@ -87,36 +94,44 @@ struct InstalledAppsListView: View {
         }
     }
 
-    private var currentSearchBinding: Binding<String> {
-        Binding(
-            get: { selectedTab == .debuggable ? debuggableSearchText : launchSearchText },
-            set: { searchText in
-                if selectedTab == .debuggable {
-                    debuggableSearchText = searchText
-                } else {
-                    launchSearchText = searchText
-                }
+    private var listRoot: some View {
+        listContent
+            .navigationTitle(mode.navigationTitle)
+            .navigationBarTitleDisplayMode(.inline)
+            .searchable(
+                text: $searchText,
+                placement: .navigationBarDrawer(displayMode: .always),
+                prompt: mode.searchPrompt
+            )
+            .toolbar {
+                leadingToolbarItem
+                trailingToolbarItem
             }
-        )
     }
 
     private var debuggableSnapshot: DebuggableAppListSnapshot {
-        let query = InstalledAppListItem.normalized(debuggableSearchText)
+        let query = InstalledAppListItem.normalized(searchText)
         let filteredApps = query.isEmpty
             ? viewModel.debuggableItems
             : viewModel.debuggableItems.filter { $0.matches(query) }
         let filteredBundleIDs = Set(filteredApps.map(\.bundleID))
+        let favoriteBundles = favoriteApps.filter { filteredBundleIDs.contains($0) }
+        let recentBundles = recentApps.filter {
+            filteredBundleIDs.contains($0) && !favoriteBundles.contains($0)
+        }
+        let featuredBundleIDs = Set(favoriteBundles).union(recentBundles)
 
         return DebuggableAppListSnapshot(
-            apps: filteredApps,
-            favoriteBundles: favoriteApps.filter { filteredBundleIDs.contains($0) },
-            recentBundles: recentApps.filter { filteredBundleIDs.contains($0) && !favoriteApps.contains($0) },
+            apps: filteredApps.filter { !featuredBundleIDs.contains($0.bundleID) },
+            hasResults: !filteredApps.isEmpty,
+            favoriteBundles: favoriteBundles,
+            recentBundles: recentBundles,
             searchIsActive: !query.isEmpty
         )
     }
 
     private var launchSnapshot: LaunchAppListSnapshot {
-        let query = InstalledAppListItem.normalized(launchSearchText)
+        let query = InstalledAppListItem.normalized(searchText)
         let filteredApps = query.isEmpty
             ? viewModel.launchItems
             : viewModel.launchItems.filter { $0.matches(query) }
@@ -125,19 +140,6 @@ struct InstalledAppsListView: View {
             apps: filteredApps,
             searchIsActive: !query.isEmpty
         )
-    }
-
-    @ToolbarContentBuilder
-    private var tabPickerToolbarItem: some ToolbarContent {
-        ToolbarItem(placement: .principal) {
-            Picker("", selection: $selectedTab) {
-                ForEach(AppListTab.allCases) { tab in
-                    Text(tab.title.localized).tag(tab)
-                }
-            }
-            .pickerStyle(.segmented)
-            .frame(width: 220)
-        }
     }
 
     @ToolbarContentBuilder
@@ -171,28 +173,9 @@ struct InstalledAppsListView: View {
     }
 
     @ViewBuilder
-    private var launchFeedbackOverlay: some View {
-        if let launchFeedback {
-            VStack {
-                Spacer()
-                Text(launchFeedback.message)
-                    .font(.subheadline.weight(.semibold))
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 8)
-                    .background(Capsule().fill(.ultraThinMaterial))
-                    .foregroundStyle(launchFeedback.success ? .green : .red)
-                    .shadow(radius: 4)
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
-                    .padding(.bottom, 40)
-            }
-            .animation(.spring(response: 0.3, dampingFraction: 0.8), value: launchFeedback.id)
-        }
-    }
-
-    @ViewBuilder
-    private func tabContent(for tab: AppListTab) -> some View {
-        switch tab {
-        case .debuggable:
+    private var listContent: some View {
+        switch mode {
+        case .jit:
             debuggableAppsList
         case .launch:
             launchAppsList
@@ -205,7 +188,9 @@ struct InstalledAppsListView: View {
         return List {
             errorSection
 
-            if snapshot.apps.isEmpty && !viewModel.isLoading {
+            if viewModel.isLoading && !snapshot.hasResults {
+                LoadingAppListState(title: "Finding JIT-eligible apps…")
+            } else if !snapshot.hasResults {
                 EmptyAppListState(
                     systemImage: snapshot.searchIsActive ? "text.magnifyingglass" : "magnifyingglass",
                     title: snapshot.searchIsActive ? "No matching apps".localized : "No JIT Apps Found".localized,
@@ -218,6 +203,7 @@ struct InstalledAppsListView: View {
             }
         }
         .listStyle(.insetGrouped)
+        .refreshable { viewModel.refreshAppLists() }
     }
 
     private var launchAppsList: some View {
@@ -226,7 +212,9 @@ struct InstalledAppsListView: View {
         return List {
             errorSection
 
-            if snapshot.apps.isEmpty {
+            if viewModel.isLoading && snapshot.apps.isEmpty {
+                LoadingAppListState(title: "Finding installed apps…")
+            } else if snapshot.apps.isEmpty {
                 EmptyAppListState(
                     systemImage: "magnifyingglass",
                     title: snapshot.searchIsActive ? "No matches".localized : "No Apps Found".localized,
@@ -239,15 +227,23 @@ struct InstalledAppsListView: View {
             }
         }
         .listStyle(.insetGrouped)
+        .refreshable { viewModel.refreshAppLists() }
     }
 
     @ViewBuilder
     private var errorSection: some View {
         if let error = viewModel.lastError {
             Section {
-                Text(error)
-                    .font(.footnote)
-                    .foregroundStyle(.orange)
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(error)
+                        .font(.footnote)
+                        .foregroundStyle(.orange)
+                    Button("Try Again") {
+                        viewModel.refreshAppLists()
+                    }
+                    .font(.footnote.weight(.semibold))
+                    .disabled(viewModel.isLoading)
+                }
             }
         }
     }
@@ -255,7 +251,7 @@ struct InstalledAppsListView: View {
     @ViewBuilder
     private func debuggableAppSections(snapshot: DebuggableAppListSnapshot) -> some View {
         if !snapshot.favoriteBundles.isEmpty {
-            Section(String(format: "Favorites (%d/4)".localized, snapshot.favoriteBundles.count)) {
+            Section(String(format: "Favorites (%d/%d)".localized, snapshot.favoriteBundles.count, AppLibraryPreferences.maxFavorites)) {
                 ForEach(snapshot.favoriteBundles, id: \.self) { bundleID in
                     debugAppRow(
                         bundleID: bundleID,
@@ -276,9 +272,11 @@ struct InstalledAppsListView: View {
             }
         }
 
-        Section("Apps with get-task-allow".localized) {
-            ForEach(snapshot.apps) { app in
-                debugAppRow(bundleID: app.bundleID, appName: app.name)
+        if !snapshot.apps.isEmpty {
+            Section("JIT Eligible Apps".localized) {
+                ForEach(snapshot.apps) { app in
+                    debugAppRow(bundleID: app.bundleID, appName: app.name)
+                }
             }
         }
     }
@@ -330,10 +328,12 @@ struct InstalledAppsListView: View {
         AppButton(
             bundleID: bundleID,
             appName: appName,
+            isFavorite: favoriteBundleSet.contains(bundleID),
+            favoriteCount: favoriteApps.count,
             recentApps: $recentApps,
             favoriteApps: $favoriteApps,
             onSelectApp: onSelectApp,
-            sharedDefaults: sharedDefaults
+            isPerformingPrimaryAction: isJITOperationInFlight
         )
     }
 
@@ -347,7 +347,7 @@ struct InstalledAppsListView: View {
             prefetchedBundleIDs.removeAll()
         } else {
             prefetchPriorityIcons()
-            persistIfChanged()
+            syncLibraryPreferences()
         }
     }
 
@@ -369,11 +369,15 @@ struct InstalledAppsListView: View {
             }
         }
 
-        appendUnique(favoriteApps)
-        appendUnique(recentApps)
-        appendUnique(pinnedSystemApps)
-        appendUnique(viewModel.debuggableItems.map(\.bundleID))
-        appendUnique(viewModel.launchItems.map(\.bundleID))
+        switch mode {
+        case .jit:
+            appendUnique(favoriteApps)
+            appendUnique(recentApps)
+            appendUnique(viewModel.debuggableItems.map(\.bundleID))
+        case .launch:
+            appendUnique(pinnedSystemApps)
+            appendUnique(viewModel.launchItems.map(\.bundleID))
+        }
 
         let bundleIDsToPrefetch = priorityBundleIDs.filter { !prefetchedBundleIDs.contains($0) }
         guard !bundleIDsToPrefetch.isEmpty else {
@@ -382,45 +386,6 @@ struct InstalledAppsListView: View {
 
         prefetchedBundleIDs.formUnion(bundleIDsToPrefetch)
         AppIconRepository.prefetch(bundleIDs: bundleIDsToPrefetch)
-    }
-
-    private func persistIfChanged() {
-        var touched = false
-        let previousRecents = (sharedDefaults.array(forKey: "recentApps") as? [String]) ?? []
-        let previousFavorites = (sharedDefaults.array(forKey: "favoriteApps") as? [String]) ?? []
-        let previousPinned = (sharedDefaults.array(forKey: "pinnedSystemApps") as? [String]) ?? []
-        let previousPinnedNames = (sharedDefaults.dictionary(forKey: "pinnedSystemAppNames") as? [String: String]) ?? [:]
-        let previousFavoriteNames = (sharedDefaults.dictionary(forKey: ScriptStore.favoriteAppNamesKey) as? [String: String]) ?? [:]
-
-        if previousRecents != recentApps {
-            sharedDefaults.set(recentApps, forKey: "recentApps")
-            touched = true
-        }
-        if previousFavorites != favoriteApps {
-            sharedDefaults.set(favoriteApps, forKey: "favoriteApps")
-            touched = true
-        }
-        if previousPinned != pinnedSystemApps {
-            sharedDefaults.set(pinnedSystemApps, forKey: "pinnedSystemApps")
-            touched = true
-        }
-        if previousPinnedNames != pinnedSystemAppNames {
-            sharedDefaults.set(pinnedSystemAppNames, forKey: "pinnedSystemAppNames")
-            touched = true
-        }
-
-        let favoriteNames = Dictionary(uniqueKeysWithValues: favoriteApps.map { bundleID in
-            (bundleID, viewModel.displayName(for: bundleID) ?? fallbackReadableName(from: bundleID))
-        })
-
-        if previousFavoriteNames != favoriteNames {
-            sharedDefaults.set(favoriteNames, forKey: ScriptStore.favoriteAppNamesKey)
-            touched = true
-        }
-
-        if touched {
-            WidgetCenter.shared.reloadAllTimelines()
-        }
     }
 
     private func startLaunching(bundleID: String, appName: String) {
@@ -438,24 +403,13 @@ struct InstalledAppsListView: View {
             let message = success
                 ? String(format: "Launch request sent for %@".localized, appName)
                 : String(format: "Launch failed for %@".localized, appName)
-            let feedback = LaunchFeedback(message: message, success: success)
 
             if success {
                 Haptics.light()
             }
 
             AccessibilityAnnouncer.announce(message)
-            withAnimation {
-                launchFeedback = feedback
-            }
-
-            DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
-                if launchFeedback?.id == feedback.id {
-                    withAnimation {
-                        launchFeedback = nil
-                    }
-                }
-            }
+            toast = success ? .success(message) : .failure(message)
         }
     }
 
@@ -470,16 +424,37 @@ struct InstalledAppsListView: View {
             pinnedSystemApps.insert(bundleID, at: 0)
             pinnedSystemAppNames[bundleID] = appName
 
-            if pinnedSystemApps.count > Self.maxSystemPins {
-                let surplus = Array(pinnedSystemApps.suffix(from: Self.maxSystemPins))
+            if pinnedSystemApps.count > AppLibraryPreferences.maxSystemPins {
+                let surplus = Array(pinnedSystemApps.suffix(from: AppLibraryPreferences.maxSystemPins))
                 for bundleID in surplus {
                     pinnedSystemAppNames.removeValue(forKey: bundleID)
                 }
-                pinnedSystemApps = Array(pinnedSystemApps.prefix(Self.maxSystemPins))
+                pinnedSystemApps = Array(pinnedSystemApps.prefix(AppLibraryPreferences.maxSystemPins))
             }
         }
+    }
 
-        persistIfChanged()
+    private func handleFavoritesChange() {
+        let cappedFavorites = Array(favoriteApps.prefix(AppLibraryPreferences.maxFavorites))
+        guard favoriteApps == cappedFavorites else {
+            favoriteApps = cappedFavorites
+            return
+        }
+
+        prefetchPriorityIcons()
+        syncLibraryPreferences()
+    }
+
+    private func syncLibraryPreferences() {
+        AppLibraryPreferences.sync(
+            recentApps: recentApps,
+            favoriteApps: favoriteApps,
+            pinnedSystemApps: pinnedSystemApps,
+            pinnedSystemAppNames: pinnedSystemAppNames,
+            displayName: { bundleID in
+                viewModel.displayName(for: bundleID) ?? fallbackReadableName(from: bundleID)
+            }
+        )
     }
 
     private func fallbackReadableName(from bundleID: String) -> String {
@@ -496,27 +471,11 @@ struct InstalledAppsListView: View {
     }
 }
 
-private enum AppListTab: Int, CaseIterable, Identifiable {
-    case debuggable
-    case launch
-
-    var id: Int {
-        rawValue
-    }
-
-    var title: String {
-        switch self {
-        case .debuggable:
-            return "JIT"
-        case .launch:
-            return "Other"
-        }
-    }
-
+private extension InstalledAppsListMode {
     var navigationTitle: String {
         switch self {
-        case .debuggable:
-            return "Enable JIT".localized
+        case .jit:
+            return "JIT"
         case .launch:
             return "Launch Apps".localized
         }
@@ -524,7 +483,7 @@ private enum AppListTab: Int, CaseIterable, Identifiable {
 
     var searchPrompt: String {
         switch self {
-        case .debuggable:
+        case .jit:
             return "Search apps or bundle ID".localized
         case .launch:
             return "Search".localized
@@ -532,14 +491,9 @@ private enum AppListTab: Int, CaseIterable, Identifiable {
     }
 }
 
-private struct LaunchFeedback: Identifiable {
-    let id = UUID()
-    let message: String
-    let success: Bool
-}
-
 private struct DebuggableAppListSnapshot {
     let apps: [InstalledAppListItem]
+    let hasResults: Bool
     let favoriteBundles: [String]
     let recentBundles: [String]
     let searchIsActive: Bool
@@ -577,9 +531,27 @@ private struct EmptyAppListState: View {
     }
 }
 
+private struct LoadingAppListState: View {
+    let title: String
+
+    var body: some View {
+        Section {
+            HStack(spacing: 12) {
+                ProgressView()
+                Text(title)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity, alignment: .center)
+            .padding(.vertical, 18)
+            .listRowBackground(Color.clear)
+        }
+    }
+}
+
 struct InstalledAppsListView_Previews: PreviewProvider {
     static var previews: some View {
-        InstalledAppsListView { _, _ in }
+        InstalledAppsListView(mode: .jit) { _, _ in }
             .environment(\.colorScheme, .dark)
     }
 }

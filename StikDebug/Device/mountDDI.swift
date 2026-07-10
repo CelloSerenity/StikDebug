@@ -7,41 +7,28 @@
 
 import Foundation
 
-typealias RpPairingFileHandle = OpaquePointer
-typealias AdapterHandle = OpaquePointer
-typealias RsdHandshakeHandle = OpaquePointer
-typealias ImageMounterHandle = OpaquePointer
-typealias LockdowndClientHandle = OpaquePointer
-
 func progressCallback(progress: size_t, total: size_t, context: UnsafeMutableRawPointer?) {
-    MountingProgress.shared.progressCallback(progress: progress, total: total, context: context)
-}
-
-enum MountCheckResult {
-    case mounted
-    case notMounted
-    case unreachable
+    MountingProgress.shared.updateProgress(progress: progress, total: total, context: context)
 }
 
 func isMounted() -> Bool {
-    return checkMountStatus() == .mounted
-}
-
-func checkMountStatus() -> MountCheckResult {
     do {
-        let result = try JITEnableContext.shared.getMountedDeviceCount()
-        return result > 0 ? .mounted : .notMounted
+        return try JITEnableContext.shared.getMountedDeviceCount() > 0
     } catch {
-        return .unreachable
+        return false
     }
 }
 
 func mountPersonalDDI(imagePath: String, trustcachePath: String, manifestPath: String) -> String? {
     do {
-        try JITEnableContext.shared.mountPersonalDDI(withImagePath: imagePath, trustcachePath: trustcachePath, manifestPath: manifestPath)
+        try JITEnableContext.shared.mountPersonalDDI(
+            withImagePath: imagePath,
+            trustcachePath: trustcachePath,
+            manifestPath: manifestPath
+        )
+        return nil
     } catch {
         LogManager.shared.addErrorLog("Failed to mount DDI: \(error.localizedDescription)")
         return error.localizedDescription
     }
-    return nil
 }

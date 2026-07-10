@@ -12,24 +12,25 @@ struct ConsoleLogsView: View {
     @Environment(\.colorScheme) private var colorScheme
     @StateObject private var logManager = LogManager.shared
     @StateObject private var systemLogStream = SystemLogStream()
+
     @State private var selectedConsoleTab: ConsoleTab = .idevice
-    @State private var jitScrollView: ScrollViewProxy? = nil
+    @State private var jitScrollProxy: ScrollViewProxy?
     @State private var showingCustomAlert = false
     @State private var alertMessage = ""
     @State private var alertTitle = ""
-    
-    @State private var logCheckTimer: Timer? = nil
-    
     @State private var isViewActive = false
-    @State private var lastProcessedLineCount = 0
     @State private var isLoadingLogs = false
     @State private var jitIsAtBottom = true
     @State private var syslogIsAtBottom = true
     @State private var syslogSearchText = ""
     @State private var showingSyslogSpeedSelector = false
-    private let appLogRefreshInterval: TimeInterval = 3.0
-    private let syslogIntervalOptions: [Double] = [0.0, 0.2, 0.5, 1.0, 1.5, 2.0]
+    @State private var logPollTask: Task<Void, Never>?
+    @State private var lastKnownFileSize: UInt64 = 0
+    @State private var lastProcessedByteOffset: UInt64 = 0
 
+    private let appLogRefreshInterval: TimeInterval = 2.0
+    private let syslogIntervalOptions: [Double] = [0.0, 0.2, 0.5, 1.0, 1.5, 2.0]
+    private let maxDisplayedLogs = 500
 
     private var filteredSyslogEntries: [SystemLogStream.Entry] {
         if syslogSearchText.isEmpty {
@@ -37,6 +38,10 @@ struct ConsoleLogsView: View {
         }
         let query = syslogSearchText.lowercased()
         return systemLogStream.entries.filter { $0.searchableRaw.contains(query) }
+    }
+
+    private var appVersion: String {
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "—"
     }
 
     var body: some View {
@@ -63,7 +68,7 @@ struct ConsoleLogsView: View {
                     Menu {
                         if selectedConsoleTab == .idevice {
                             Button("Refresh", systemImage: "arrow.clockwise") {
-                                Task { await loadIdeviceLogsAsync() }
+                                Task { await loadIdeviceLogs(fullReload: true) }
                             }
                             Button("Clear", systemImage: "trash", role: .destructive) {
                                 logManager.clearLogs()
@@ -106,18 +111,29 @@ struct ConsoleLogsView: View {
             } message: {
                 Text("Choose how quickly new relay entries appear.")
             }
-        }
-                .onDisappear {
-            systemLogStream.stop()
-        }
-        .onChange(of: systemLogStream.lastError) { _, newError in
-            if let error = newError {
-                presentAlert(title: "Syslog Error", message: error)
-                systemLogStream.lastError = nil
+            .onChange(of: selectedConsoleTab) { _, tab in
+                if tab == .syslog {
+                    if !systemLogStream.isStreaming {
+                        systemLogStream.start()
+                    }
+                } else {
+                    systemLogStream.stop()
+                }
+            }
+            .onChange(of: systemLogStream.lastError) { _, newError in
+                if let error = newError {
+                    presentAlert(title: "Syslog Error", message: error)
+                    systemLogStream.lastError = nil
+                }
+            }
+            .onDisappear {
+                isViewActive = false
+                stopLogPolling()
+                systemLogStream.stop()
             }
         }
     }
-    
+
     private var jitLogsPane: some View {
         ScrollViewReader { proxy in
             ScrollView {
@@ -125,24 +141,28 @@ struct ConsoleLogsView: View {
                     VStack(alignment: .leading, spacing: 4) {
                         Text("=== DEVICE INFORMATION ===")
                             .font(.system(size: 11, design: .monospaced))
-                            .foregroundColor(colorScheme == .dark ? .white : .black)
+                            .foregroundStyle(primaryLogColor)
                             .padding(.vertical, 4)
 
                         Text("iOS Version: \(UIDevice.current.systemVersion)")
                             .font(.system(size: 11, design: .monospaced))
-                            .foregroundColor(colorScheme == .dark ? .white : .black)
+                            .foregroundStyle(primaryLogColor)
 
                         Text("Device: \(UIDevice.current.name)")
                             .font(.system(size: 11, design: .monospaced))
-                            .foregroundColor(colorScheme == .dark ? .white : .black)
+                            .foregroundStyle(primaryLogColor)
 
                         Text("Model: \(UIDevice.current.model)")
                             .font(.system(size: 11, design: .monospaced))
-                            .foregroundColor(colorScheme == .dark ? .white : .black)
+                            .foregroundStyle(primaryLogColor)
+
+                        Text("StikDebug: \(appVersion)")
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundStyle(primaryLogColor)
 
                         Text("=== LOG ENTRIES ===")
                             .font(.system(size: 11, design: .monospaced))
-                            .foregroundColor(colorScheme == .dark ? .white : .black)
+                            .foregroundStyle(primaryLogColor)
                             .padding(.vertical, 4)
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -174,18 +194,18 @@ struct ConsoleLogsView: View {
                 }
             }
             .onAppear {
-                jitScrollView = proxy
+                jitScrollProxy = proxy
                 isViewActive = true
-                Task { await loadIdeviceLogsAsync() }
-                startLogCheckTimer()
+                Task { await loadIdeviceLogs(fullReload: true) }
+                startLogPolling()
             }
             .onDisappear {
                 isViewActive = false
-                stopLogCheckTimer()
+                stopLogPolling()
             }
         }
     }
-    
+
     private var syslogLogsPane: some View {
         VStack(spacing: 0) {
             HStack {
@@ -202,6 +222,7 @@ struct ConsoleLogsView: View {
                         Image(systemName: "xmark.circle.fill")
                             .foregroundStyle(.secondary)
                     }
+                    .accessibilityLabel("Clear filter")
                 }
             }
             .padding(8)
@@ -243,11 +264,12 @@ struct ConsoleLogsView: View {
                         systemLogStream.start()
                     }
                 }
-                .onDisappear {
-                    systemLogStream.stop()
-                }
             }
         }
+    }
+
+    private var primaryLogColor: Color {
+        colorScheme == .dark ? .white : .black
     }
 
     private func copyJITLogs() {
@@ -255,10 +277,10 @@ struct ConsoleLogsView: View {
         logsContent += "Version: \(UIDevice.current.systemVersion)\n"
         logsContent += "Name: \(UIDevice.current.name)\n"
         logsContent += "Model: \(UIDevice.current.model)\n"
-        logsContent += "StikDebug Version: App Version: 1.0\n\n"
+        logsContent += "StikDebug Version: \(appVersion)\n\n"
         logsContent += "=== LOG ENTRIES ===\n"
         logsContent += logManager.logs.map {
-            "[\(formatTime(date: $0.timestamp))] [\($0.type.rawValue)] \($0.message)"
+            "[\(DateFormatter.consoleLogsFormatter.string(from: $0.timestamp))] [\($0.type.rawValue)] \($0.message)"
         }.joined(separator: "\n")
         UIPasteboard.general.string = logsContent
         presentAlert(title: "Logs Copied", message: "Logs have been copied to clipboard.")
@@ -266,7 +288,7 @@ struct ConsoleLogsView: View {
 
     @ViewBuilder
     private var exportMenuOption: some View {
-        let logURL: URL = URL.documentsDirectory.appendingPathComponent("idevice_log.txt")
+        let logURL = URL.documentsDirectory.appendingPathComponent("idevice_log.txt")
         if FileManager.default.fileExists(atPath: logURL.path) {
             ShareLink(
                 item: logURL,
@@ -280,23 +302,6 @@ struct ConsoleLogsView: View {
             }
         }
     }
-    
-    private func formatTime(date: Date) -> String {
-        DateFormatter.consoleLogsFormatter.string(from: date)
-    }
-
-    nonisolated private static func logType(for line: String) -> LogManager.LogEntry.LogType {
-        let lowercase = line.lowercased()
-        if lowercase.contains("error") {
-            return .error
-        } else if lowercase.contains("warning") {
-            return .warning
-        } else if lowercase.contains("debug") {
-            return .debug
-        } else {
-            return .info
-        }
-    }
 
     private func intervalLabel(for value: Double) -> String {
         if value <= 0 {
@@ -304,113 +309,134 @@ struct ConsoleLogsView: View {
         }
         return "\(String(format: "%.1f", value))s"
     }
-    
-    private func loadIdeviceLogsAsync() async {
+
+    // MARK: - Efficient log tailing
+
+    private func loadIdeviceLogs(fullReload: Bool) async {
         guard !isLoadingLogs else { return }
         isLoadingLogs = true
 
-        let logPath = URL.documentsDirectory.appendingPathComponent("idevice_log.txt").path
+        let logURL = URL.documentsDirectory.appendingPathComponent("idevice_log.txt")
+        let logPath = logURL.path
 
         guard FileManager.default.fileExists(atPath: logPath) else {
             await MainActor.run {
-                logManager.addInfoLog("No idevice logs found (Restart the app to continue reading)")
+                if fullReload {
+                    logManager.addInfoLog("No idevice logs found (Restart the app to continue reading)")
+                }
                 isLoadingLogs = false
             }
             return
         }
 
-        // Do all file I/O and parsing on a background thread
-        let result: ([LogManager.LogEntry], Int)? = await Task.detached(priority: .userInitiated) {
+        let previousOffset = fullReload ? 0 : lastProcessedByteOffset
+        let maxLogs = maxDisplayedLogs
+
+        let result: LogTailResult? = await Task.detached(priority: .utility) {
             do {
-                let logContent = try String(contentsOfFile: logPath, encoding: .utf8)
-                let lines = logContent.components(separatedBy: .newlines)
+                let attributes = try FileManager.default.attributesOfItem(atPath: logPath)
+                let fileSize = (attributes[.size] as? NSNumber)?.uint64Value ?? 0
 
-                let maxLines = 500
-                let startIndex = max(0, lines.count - maxLines)
-                let recentLines = lines[startIndex..<lines.count]
+                // File shrank (rotated/cleared) → force full reload
+                let effectiveOffset: UInt64
+                if previousOffset > fileSize {
+                    effectiveOffset = 0
+                } else if !fullReload && previousOffset == fileSize {
+                    return LogTailResult(entries: [], newOffset: fileSize, replaced: false, unchanged: true)
+                } else {
+                    effectiveOffset = previousOffset
+                }
 
-                let skipPrefixes = ["=== DEVICE INFORMATION ===", "Version:", "Name:", "Model:", "=== LOG ENTRIES ==="]
+                let handle = try FileHandle(forReadingFrom: logURL)
+                defer { try? handle.close() }
 
-                let parsed = Self.parseAppLogEntries(from: recentLines, skipPrefixes: skipPrefixes)
-                return (parsed, lines.count)
+                try handle.seek(toOffset: effectiveOffset)
+                let data = handle.readDataToEndOfFile()
+                guard let chunk = String(data: data, encoding: .utf8) else {
+                    return nil
+                }
+
+                let lines = chunk.components(separatedBy: .newlines)
+                let skipPrefixes = [
+                    "=== DEVICE INFORMATION ===",
+                    "Version:",
+                    "Name:",
+                    "Model:",
+                    "=== LOG ENTRIES ===",
+                    "StikDebug:"
+                ]
+
+                // When starting from mid-file, drop a partial first line.
+                let linesToParse: ArraySlice<String>
+                if effectiveOffset > 0, let firstNewline = chunk.firstIndex(of: "\n") {
+                    let afterPartial = chunk.index(after: firstNewline)
+                    let remainder = String(chunk[afterPartial...])
+                    linesToParse = remainder.components(separatedBy: .newlines)[...]
+                } else {
+                    linesToParse = lines[...]
+                }
+
+                var parsed = Self.parseAppLogEntries(from: linesToParse, skipPrefixes: skipPrefixes)
+
+                let replaced = fullReload || previousOffset > fileSize || effectiveOffset == 0
+                if replaced && parsed.count > maxLogs {
+                    parsed = Array(parsed.suffix(maxLogs))
+                }
+
+                return LogTailResult(
+                    entries: parsed,
+                    newOffset: fileSize,
+                    replaced: replaced,
+                    unchanged: false
+                )
             } catch {
                 return nil
             }
         }.value
 
         await MainActor.run {
-            if let (entries, lineCount) = result {
-                lastProcessedLineCount = lineCount
-                logManager.setLogs(entries)
-                if jitIsAtBottom, let last = logManager.logs.last {
-                    jitScrollView?.scrollTo(last.id, anchor: .bottom)
+            defer { isLoadingLogs = false }
+
+            guard let result else {
+                if fullReload {
+                    logManager.addErrorLog("Failed to read idevice logs")
                 }
-            } else {
-                logManager.addErrorLog("Failed to read idevice logs")
+                return
             }
-            isLoadingLogs = false
+
+            if result.unchanged {
+                return
+            }
+
+            lastProcessedByteOffset = result.newOffset
+            lastKnownFileSize = result.newOffset
+
+            if result.replaced {
+                logManager.setLogs(result.entries)
+            } else if !result.entries.isEmpty {
+                logManager.appendLogs(result.entries, maxTotal: maxDisplayedLogs)
+            }
+
+            if jitIsAtBottom, let last = logManager.logs.last {
+                jitScrollProxy?.scrollTo(last.id, anchor: .bottom)
+            }
         }
     }
-    
-    private func startLogCheckTimer() {
-        guard logCheckTimer == nil else { return }
-        logCheckTimer = Timer.scheduledTimer(withTimeInterval: appLogRefreshInterval, repeats: true) { _ in
-            if isViewActive {
-                Task { await checkForNewLogs() }
+
+    private func startLogPolling() {
+        stopLogPolling()
+        logPollTask = Task { @MainActor in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: UInt64(appLogRefreshInterval * 1_000_000_000))
+                guard !Task.isCancelled, isViewActive else { continue }
+                await loadIdeviceLogs(fullReload: false)
             }
-        }
-        if let logCheckTimer {
-            RunLoop.main.add(logCheckTimer, forMode: .common)
         }
     }
-    
-    private func checkForNewLogs() async {
-        guard !isLoadingLogs else { return }
-        isLoadingLogs = true
 
-        let logPath = URL.documentsDirectory.appendingPathComponent("idevice_log.txt").path
-        let previousCount = lastProcessedLineCount
-
-        guard FileManager.default.fileExists(atPath: logPath) else {
-            isLoadingLogs = false
-            return
-        }
-
-        // Parse new lines on a background thread
-        let result: ([LogManager.LogEntry], Int)? = await Task.detached(priority: .userInitiated) {
-            do {
-                let logContent = try String(contentsOfFile: logPath, encoding: .utf8)
-                let lines = logContent.components(separatedBy: .newlines)
-
-                guard lines.count > previousCount else { return ([], lines.count) }
-
-                let newLines = lines[previousCount..<lines.count]
-                let parsed = Self.parseAppLogEntries(from: newLines)
-                return (parsed, lines.count)
-            } catch {
-                return nil
-            }
-        }.value
-
-        await MainActor.run {
-            if let (entries, lineCount) = result {
-                lastProcessedLineCount = lineCount
-                if !entries.isEmpty {
-                    logManager.appendLogs(entries, maxTotal: 500)
-                    if jitIsAtBottom, let last = logManager.logs.last {
-                        jitScrollView?.scrollTo(last.id, anchor: .bottom)
-                    }
-                }
-            } else {
-                logManager.addErrorLog("Failed to read new logs")
-            }
-            isLoadingLogs = false
-        }
-    }
-    
-    private func stopLogCheckTimer() {
-        logCheckTimer?.invalidate()
-        logCheckTimer = nil
+    private func stopLogPolling() {
+        logPollTask?.cancel()
+        logPollTask = nil
     }
 
     private func toggleSyslogPlayback() {
@@ -424,7 +450,9 @@ struct ConsoleLogsView: View {
     private func copySyslogToClipboard() {
         let entries = filteredSyslogEntries
         guard !entries.isEmpty else {
-            let message = syslogSearchText.isEmpty ? "No syslog entries to copy." : "No matching syslog entries to copy."
+            let message = syslogSearchText.isEmpty
+                ? "No syslog entries to copy."
+                : "No matching syslog entries to copy."
             presentAlert(title: "Export Failed", message: message)
             return
         }
@@ -470,20 +498,47 @@ struct ConsoleLogsView: View {
         syslogIsAtBottom = isAtBottom
     }
 
-    nonisolated private static func parseAppLogEntries<S: Sequence>(from lines: S, skipPrefixes: [String] = []) -> [LogManager.LogEntry] where S.Element == String {
+    nonisolated private static func parseAppLogEntries<S: Sequence>(
+        from lines: S,
+        skipPrefixes: [String] = []
+    ) -> [LogManager.LogEntry] where S.Element == String {
         var parsed: [LogManager.LogEntry] = []
         parsed.reserveCapacity(lines.underestimatedCount)
 
         for line in lines {
             if line.isEmpty { continue }
             if skipPrefixes.contains(where: { line.contains($0) }) { continue }
-            parsed.append(LogManager.LogEntry(timestamp: Date(), type: Self.logType(for: line), message: line))
+            parsed.append(LogEntryFactory.make(from: line))
         }
         return parsed
     }
-
 }
 
+private struct LogTailResult: Sendable {
+    let entries: [LogManager.LogEntry]
+    let newOffset: UInt64
+    let replaced: Bool
+    let unchanged: Bool
+}
+
+private enum LogEntryFactory {
+    nonisolated static func make(from line: String) -> LogManager.LogEntry {
+        LogManager.LogEntry(timestamp: Date(), type: logType(for: line), message: line)
+    }
+
+    nonisolated static func logType(for line: String) -> LogManager.LogEntry.LogType {
+        let lowercase = line.lowercased()
+        if lowercase.contains("error") {
+            return .error
+        } else if lowercase.contains("warning") {
+            return .warning
+        } else if lowercase.contains("debug") {
+            return .debug
+        } else {
+            return .info
+        }
+    }
+}
 
 struct ConsoleLogsView_Previews: PreviewProvider {
     static var previews: some View {
@@ -559,7 +614,7 @@ private struct SyslogRow: View, Equatable {
     }
 
     private var attributedString: NSAttributedString {
-        let type = logType(for: entry.raw)
+        let type = LogEntryFactory.logType(for: entry.raw)
         let fullString = NSMutableAttributedString()
 
         fullString.append(NSAttributedString(
@@ -586,19 +641,6 @@ private struct SyslogRow: View, Equatable {
 
     private var secondaryTextColor: UIColor {
         colorScheme == .dark ? .gray : .darkGray
-    }
-
-    private func logType(for line: String) -> LogManager.LogEntry.LogType {
-        let lowercase = line.lowercased()
-        if lowercase.contains("error") {
-            return .error
-        } else if lowercase.contains("warning") {
-            return .warning
-        } else if lowercase.contains("debug") {
-            return .debug
-        } else {
-            return .info
-        }
     }
 }
 

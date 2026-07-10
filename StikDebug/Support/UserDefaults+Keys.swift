@@ -15,5 +15,11 @@ extension UserDefaults {
         static let defaultScriptName = "DefaultScriptName"
         static let defaultScriptNameValue = ""
         static let targetDeviceIP = "TunnelDeviceIP"
+        static let loadAppIconsOnJIT = "loadAppIconsOnJIT"
+        /// ImmortalizerJailed keep-alive toggle (matches upstream UserDefaults key).
+        static let immortalized = "immortalized"
+        static let enableAdvancedOptions = "enableAdvancedOptions"
+        static let primaryTabSelection = "primaryTabSelection"
+        static let locationBookmarks = "locationBookmarks"
     }
 }

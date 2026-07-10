@@ -10,83 +10,65 @@ final class MountingProgress: ObservableObject {
     static let shared = MountingProgress()
 
     @Published private(set) var mountProgress: Double = 0.0
-    @Published private(set) var mountingThread: Thread?
-    @Published private(set) var coolisMounted: Bool = false
+    @Published private(set) var isMounting = false
+    @Published private(set) var isDeveloperDiskImageMounted = false
 
     private init() {}
 
-    func checkforMounted() {
-        DispatchQueue.global(qos: .utility).async {
-            let mounted = isMounted()
-            DispatchQueue.main.async {
-                self.coolisMounted = mounted
-            }
-        }
-    }
-
-    func progressCallback(progress: size_t, total: size_t, context: UnsafeMutableRawPointer?) {
+    func updateProgress(progress: size_t, total: size_t, context: UnsafeMutableRawPointer?) {
+        guard total > 0 else { return }
         let percentage = Double(progress) / Double(total) * 100.0
         DispatchQueue.main.async {
+            guard abs(self.mountProgress - percentage) >= 1.0 || percentage == 0 || percentage >= 100 else {
+                return
+            }
             self.mountProgress = percentage
         }
     }
 
-    func pubMount() {
-        mount()
-    }
+    func mountIfNeeded() {
+        guard !isMounting else { return }
+        isMounting = true
+        mountProgress = 0
 
-    private func mount() {
-        let currentlyMounted = isMounted()
-        DispatchQueue.main.async {
-            self.coolisMounted = currentlyMounted
-        }
-
-        guard isPairing(), !currentlyMounted else {
-            return
-        }
-
-        if let mountingThread {
-            mountingThread.cancel()
-            self.mountingThread = nil
-        }
-
-        let thread = Thread { [weak self] in
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self else { return }
+
+            let currentlyMounted = isMounted()
+            guard Self.pairingFileIsReadable(), !currentlyMounted else {
+                DispatchQueue.main.async {
+                    self.isDeveloperDiskImageMounted = currentlyMounted
+                    self.isMounting = false
+                }
+                return
+            }
+
+            let docs = URL.documentsDirectory
             let mountError = mountPersonalDDI(
-                imagePath: URL.documentsDirectory.appendingPathComponent("DDI/Image.dmg").path,
-                trustcachePath: URL.documentsDirectory.appendingPathComponent("DDI/Image.dmg.trustcache").path,
-                manifestPath: URL.documentsDirectory.appendingPathComponent("DDI/BuildManifest.plist").path
+                imagePath: docs.appendingPathComponent("DDI/Image.dmg").path,
+                trustcachePath: docs.appendingPathComponent("DDI/Image.dmg.trustcache").path,
+                manifestPath: docs.appendingPathComponent("DDI/BuildManifest.plist").path
             )
 
             DispatchQueue.main.async {
+                self.isMounting = false
                 if let mountError {
-                    showAlert(title: "DDI Mount Failed", message: mountError, showOk: true, showTryAgain: true) { shouldTryAgain in
-                        if shouldTryAgain {
-                            self.mount()
-                        }
+                    showAlert(title: "DDI Mount Failed", message: mountError, showOk: true, showTryAgain: true) { tryAgain in
+                        if tryAgain { self.mountIfNeeded() }
                     }
                 } else {
-                    self.coolisMounted = true
-                    self.checkforMounted()
+                    self.isDeveloperDiskImageMounted = true
                 }
-                self.mountingThread = nil
             }
         }
-
-        thread.qualityOfService = .background
-        thread.name = "mounting"
-        thread.start()
-        mountingThread = thread
     }
-}
 
-func isPairing() -> Bool {
-    let pairingPath = PairingFileStore.prepareURL().path
-    var pairingFile: RpPairingFileHandle?
-    let error = rp_pairing_file_read(pairingPath, &pairingFile)
-    if error != nil {
-        return false
+    private static func pairingFileIsReadable() -> Bool {
+        let path = PairingFileStore.prepareURL().path
+        var pairingFile: OpaquePointer?
+        let error = rp_pairing_file_read(path, &pairingFile)
+        if error != nil { return false }
+        rp_pairing_file_free(pairingFile)
+        return true
     }
-    rp_pairing_file_free(pairingFile)
-    return true
 }

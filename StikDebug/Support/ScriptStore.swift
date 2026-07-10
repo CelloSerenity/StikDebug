@@ -15,7 +15,6 @@ enum ScriptStore {
     static let assignmentKey = UserDefaults.Keys.bundleScriptMap
     static let favoriteAppNamesSuiteName = "group.com.stik.sj"
     static let favoriteAppNamesKey = "favoriteAppNames"
-    static let defaultScriptName = UserDefaults.Keys.defaultScriptNameValue
     static let bundledResources: [ScriptResource] = [
         ScriptResource(resourceName: "maciOS", fileName: "maciOS.js"),
         ScriptResource(resourceName: "universal", fileName: "universal.js"),

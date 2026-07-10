@@ -20,54 +20,6 @@ enum PairingFileStore {
         directoryURL.appendingPathComponent(fileName)
     }
 
-    @discardableResult
-    static func prepareURL(fileManager: FileManager = .default) -> URL {
-        let destination = url
-        try? fileManager.createDirectory(at: directoryURL, withIntermediateDirectories: true)
-
-        guard !fileManager.fileExists(atPath: destination.path) else {
-            removeLegacyCopies(fileManager: fileManager)
-            return destination
-        }
-
-        migrateLegacyCopy(to: destination, fileManager: fileManager)
-        return destination
-    }
-
-    static func replace(with sourceURL: URL, fileManager: FileManager = .default) throws {
-        let destination = prepareURL(fileManager: fileManager)
-        if fileManager.fileExists(atPath: destination.path) {
-            try fileManager.removeItem(at: destination)
-        }
-
-        removeLegacyCopies(fileManager: fileManager)
-        try fileManager.copyItem(at: sourceURL, to: destination)
-        protectPairingFile(at: destination, fileManager: fileManager)
-    }
-
-    static func importFromPicker(_ sourceURL: URL, fileManager: FileManager = .default) throws {
-        let accessing = sourceURL.startAccessingSecurityScopedResource()
-        defer {
-            if accessing {
-                sourceURL.stopAccessingSecurityScopedResource()
-            }
-        }
-
-        guard fileManager.fileExists(atPath: sourceURL.path) else {
-            throw CocoaError(.fileNoSuchFile)
-        }
-
-        try replace(with: sourceURL, fileManager: fileManager)
-    }
-
-    static func remove(fileManager: FileManager = .default) throws {
-        let destination = prepareURL(fileManager: fileManager)
-        if fileManager.fileExists(atPath: destination.path) {
-            try fileManager.removeItem(at: destination)
-        }
-        removeLegacyCopies(fileManager: fileManager)
-    }
-
     private static var directoryURL: URL {
         FileManager.default
             .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -81,6 +33,38 @@ enum PairingFileStore {
         ]
     }
 
+    @discardableResult
+    static func prepareURL(fileManager: FileManager = .default) -> URL {
+        let destination = url
+        try? fileManager.createDirectory(at: directoryURL, withIntermediateDirectories: true)
+
+        if !fileManager.fileExists(atPath: destination.path) {
+            migrateLegacyCopy(to: destination, fileManager: fileManager)
+        } else {
+            removeLegacyCopies(fileManager: fileManager)
+        }
+        return destination
+    }
+
+    static func importFromPicker(_ sourceURL: URL, fileManager: FileManager = .default) throws {
+        let accessing = sourceURL.startAccessingSecurityScopedResource()
+        defer {
+            if accessing { sourceURL.stopAccessingSecurityScopedResource() }
+        }
+
+        guard fileManager.fileExists(atPath: sourceURL.path) else {
+            throw CocoaError(.fileNoSuchFile)
+        }
+
+        let destination = prepareURL(fileManager: fileManager)
+        if fileManager.fileExists(atPath: destination.path) {
+            try fileManager.removeItem(at: destination)
+        }
+        removeLegacyCopies(fileManager: fileManager)
+        try fileManager.copyItem(at: sourceURL, to: destination)
+        try? fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: destination.path)
+    }
+
     private static func migrateLegacyCopy(to destination: URL, fileManager: FileManager) {
         for legacyURL in legacyURLs where fileManager.fileExists(atPath: legacyURL.path) {
             do {
@@ -91,8 +75,7 @@ enum PairingFileStore {
                     try? fileManager.removeItem(at: legacyURL)
                 }
             }
-
-            protectPairingFile(at: destination, fileManager: fileManager)
+            try? fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: destination.path)
             break
         }
     }
@@ -101,9 +84,5 @@ enum PairingFileStore {
         for legacyURL in legacyURLs where fileManager.fileExists(atPath: legacyURL.path) {
             try? fileManager.removeItem(at: legacyURL)
         }
-    }
-
-    private static func protectPairingFile(at url: URL, fileManager: FileManager) {
-        try? fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
     }
 }

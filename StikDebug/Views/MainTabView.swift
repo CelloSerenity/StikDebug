@@ -50,9 +50,10 @@ private enum ExternalLocationAction: Identifiable {
 }
 
 struct MainTabView: View {
-    @AppStorage("primaryTabSelection") private var selection: String = AppFeature.home.id
+    @AppStorage(UserDefaults.Keys.primaryTabSelection) private var selection: String = AppFeature.tools.id
+    @StateObject private var pairingImport = PairingFileImportCoordinator.shared
+    @ObservedObject private var jitViewModel = HomeViewModel.shared
     @State private var detachedFeature: AppFeature?
-    @State private var didSetInitialHome = false
     @State private var pendingLocationAction: ExternalLocationAction?
 
     var body: some View {
@@ -66,15 +67,16 @@ struct MainTabView: View {
                         .tag(feature.id)
                 }
             }
+            .statusToast($jitViewModel.toast)
             .onAppear {
                 ensureSelectionIsValid()
-                if !didSetInitialHome {
-                    selection = AppFeature.home.id
-                    didSetInitialHome = true
-                }
+                jitViewModel.handleAppear()
             }
             .onOpenURL { url in
                 handleURL(url)
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .intentJSScriptReady)) { notification in
+                jitViewModel.handleScriptReady(notification)
             }
             .confirmationDialog(
                 pendingLocationAction?.title ?? "External Location Request",
@@ -99,6 +101,29 @@ struct MainTabView: View {
             } message: { action in
                 Text(action.message)
             }
+            .confirmationDialog(
+                jitViewModel.pendingExternalURLAction?.title ?? "External Request",
+                isPresented: Binding(
+                    get: { jitViewModel.pendingExternalURLAction != nil },
+                    set: { isPresented in
+                        if !isPresented {
+                            jitViewModel.pendingExternalURLAction = nil
+                        }
+                    }
+                ),
+                titleVisibility: .visible,
+                presenting: jitViewModel.pendingExternalURLAction
+            ) { action in
+                Button(action.confirmationTitle, role: action.role) {
+                    jitViewModel.performExternalURLAction(action)
+                    jitViewModel.pendingExternalURLAction = nil
+                }
+                Button("Cancel", role: .cancel) {
+                    jitViewModel.pendingExternalURLAction = nil
+                }
+            } message: { action in
+                Text(action.message)
+            }
             .sheet(item: $detachedFeature) { feature in
                 NavigationStack {
                     feature.destination
@@ -111,6 +136,26 @@ struct MainTabView: View {
                         }
                 }
             }
+            .sheet(item: $jitViewModel.scriptRunModel) { model in
+                NavigationStack {
+                    RunJSView(model: model)
+                        .toolbar {
+                            ToolbarItem(placement: .topBarTrailing) {
+                                Button("Done") { jitViewModel.scriptRunModel = nil }
+                            }
+                        }
+                        .navigationBarTitleDisplayMode(.inline)
+                }
+            }
+            .fileImporter(
+                isPresented: $pairingImport.isPickerPresented,
+                allowedContentTypes: PairingFileStore.supportedContentTypes,
+                onCompletion: pairingImport.handlePickerResult
+            )
+            .onReceive(NotificationCenter.default.publisher(for: .showPairingFilePicker)) { _ in
+                selection = AppFeature.tools.id
+                pairingImport.requestImport()
+            }
         }
     }
 
@@ -119,25 +164,36 @@ struct MainTabView: View {
         if ids.contains(selection) {
             return
         }
-        selection = AppFeature.home.id
+        selection = AppFeature.tools.id
     }
 
     private func handleURL(_ url: URL) {
         guard let host = url.host()?.lowercased() else { return }
 
         switch host {
+        case "enable-jit", "kill-process", "launch-app":
+            jitViewModel.handleExternalURL(url)
         case "simulate-location", "set-location":
             confirmSimulatedLocation(from: url)
         case "location", "location-simulation":
-            if coordinate(from: url) == nil {
+            if URLQueryHelpers.coordinate(from: url) == nil {
                 openFeature(id: AppFeature.location.id)
             } else {
                 confirmSimulatedLocation(from: url)
             }
         case "clear-location", "stop-location":
             pendingLocationAction = .clear
+        case "jit":
+            openFeature(id: AppFeature.jit.id)
+        case "tools":
+            selection = AppFeature.tools.id
+        case "settings":
+            selection = AppFeature.settings.id
         default:
-            break
+            // Unknown hosts that look like tools open as detached features when possible.
+            if let feature = AppFeature(rawValue: host) {
+                openFeature(id: feature.id)
+            }
         }
     }
 
@@ -154,7 +210,7 @@ struct MainTabView: View {
     }
 
     private func confirmSimulatedLocation(from url: URL) {
-        guard let coordinate = coordinate(from: url) else {
+        guard let coordinate = URLQueryHelpers.coordinate(from: url) else {
             showAlert(
                 title: "Invalid Location URL",
                 message: "Use stikdebug://simulate-location?lat=37.3349&lon=-122.0090",
@@ -163,7 +219,10 @@ struct MainTabView: View {
             return
         }
 
-        guard coordinateIsValid(latitude: coordinate.latitude, longitude: coordinate.longitude) else {
+        guard URLQueryHelpers.coordinateIsValid(
+            latitude: coordinate.latitude,
+            longitude: coordinate.longitude
+        ) else {
             showAlert(
                 title: "Invalid Coordinates",
                 message: "Latitude must be between -90 and 90. Longitude must be between -180 and 180.",
@@ -185,19 +244,14 @@ struct MainTabView: View {
     }
 
     private func simulateLocation(from url: URL) {
-        guard let coordinate = coordinate(from: url) else {
+        guard let coordinate = URLQueryHelpers.coordinate(from: url),
+              URLQueryHelpers.coordinateIsValid(
+                latitude: coordinate.latitude,
+                longitude: coordinate.longitude
+              ) else {
             showAlert(
                 title: "Invalid Location URL",
                 message: "Use stikdebug://simulate-location?lat=37.3349&lon=-122.0090",
-                showOk: true
-            )
-            return
-        }
-
-        guard coordinateIsValid(latitude: coordinate.latitude, longitude: coordinate.longitude) else {
-            showAlert(
-                title: "Invalid Coordinates",
-                message: "Latitude must be between -90 and 90. Longitude must be between -180 and 180.",
                 showOk: true
             )
             return
@@ -223,9 +277,12 @@ struct MainTabView: View {
 
             DispatchQueue.main.async {
                 if code == 0 {
-                    BackgroundLocationManager.shared.requestStart()
                     LogManager.shared.addInfoLog(
-                        String(format: "Simulated location from URL: %.6f, %.6f", coordinate.latitude, coordinate.longitude)
+                        String(
+                            format: "Simulated location from URL: %.6f, %.6f",
+                            coordinate.latitude,
+                            coordinate.longitude
+                        )
                     )
                 } else {
                     showAlert(
@@ -243,7 +300,6 @@ struct MainTabView: View {
             let code = clear_simulated_location()
             DispatchQueue.main.async {
                 if code == 0 {
-                    BackgroundLocationManager.shared.requestStop()
                     LogManager.shared.addInfoLog("Cleared simulated location from URL")
                 } else {
                     showAlert(
@@ -253,48 +309,6 @@ struct MainTabView: View {
                     )
                 }
             }
-        }
-    }
-
-    private func coordinate(from url: URL) -> (latitude: Double, longitude: Double)? {
-        let components = URLComponents(url: url, resolvingAgainstBaseURL: false)
-        let queryItems = components?.queryItems ?? []
-
-        func queryValue(_ names: [String]) -> String? {
-            for name in names {
-                if let value = queryItems.first(where: { $0.name.caseInsensitiveCompare(name) == .orderedSame })?.value {
-                    return value
-                }
-            }
-            return nil
-        }
-
-        if let latitudeText = queryValue(["lat", "latitude"]),
-           let longitudeText = queryValue(["lon", "lng", "long", "longitude"]),
-           let latitude = Double(latitudeText.trimmingCharacters(in: .whitespacesAndNewlines)),
-           let longitude = Double(longitudeText.trimmingCharacters(in: .whitespacesAndNewlines)) {
-            return (latitude, longitude)
-        }
-
-        let coordinateText = queryValue(["coordinate", "coordinates", "coords", "q", "ll"])
-            ?? components?.path
-            ?? ""
-        let values = numbers(in: coordinateText)
-        guard values.count >= 2 else { return nil }
-        return (values[0], values[1])
-    }
-
-    private func coordinateIsValid(latitude: Double, longitude: Double) -> Bool {
-        (-90.0...90.0).contains(latitude) && (-180.0...180.0).contains(longitude)
-    }
-
-    private func numbers(in text: String) -> [Double] {
-        let pattern = #"[-+]?(?:\d+(?:\.\d*)?|\.\d+)"#
-        guard let regex = try? NSRegularExpression(pattern: pattern) else { return [] }
-        let range = NSRange(text.startIndex..<text.endIndex, in: text)
-        return regex.matches(in: text, range: range).compactMap { match in
-            guard let matchRange = Range(match.range, in: text) else { return nil }
-            return Double(text[matchRange])
         }
     }
 }

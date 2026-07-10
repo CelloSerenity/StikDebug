@@ -6,6 +6,7 @@
 import Foundation
 
 extension Notification.Name {
+    static let showPairingFilePicker = Notification.Name("ShowPairingFilePicker")
     static let pairingFileImported = Notification.Name("PairingFileImported")
     static let intentJSScriptReady = Notification.Name("intentJSScriptReady")
 }

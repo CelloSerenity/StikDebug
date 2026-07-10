@@ -297,9 +297,9 @@ struct StikDebugShortcuts: AppShortcutsProvider {
 // MARK: - Shared Tunnel Helper
 
 func ensureTunnel() async {
-    await MainActor.run {
-        markTunnelDisconnected()
-        startTunnelInBackground(showErrorUI: false)
+    await withCheckedContinuation { continuation in
+        startTunnelInBackground(showErrorUI: false) { _ in
+            continuation.resume()
+        }
     }
-    try? await Task.sleep(nanoseconds: 1_000_000_000)
 }

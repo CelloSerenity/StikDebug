@@ -6,15 +6,16 @@
 import SwiftUI
 
 enum AppFeature: String, CaseIterable, Identifiable {
-    case home
-    case scripts
     case tools
+    case settings
+    case jit
+    case scripts
     case console
     case deviceInfo = "deviceinfo"
     case profiles
     case processes
     case location
-    case settings
+    case launchApps = "launchapps"
 
     var id: String {
         rawValue
@@ -22,12 +23,14 @@ enum AppFeature: String, CaseIterable, Identifiable {
 
     var title: String {
         switch self {
-        case .home:
-            return "Apps"
+        case .tools:
+            return "Home"
+        case .settings:
+            return "Settings"
+        case .jit:
+            return "JIT"
         case .scripts:
             return "Scripts"
-        case .tools:
-            return "Tools"
         case .console:
             return "Console"
         case .deviceInfo:
@@ -38,19 +41,21 @@ enum AppFeature: String, CaseIterable, Identifiable {
             return "Processes"
         case .location:
             return "Location"
-        case .settings:
-            return "Settings"
+        case .launchApps:
+            return "Launch Apps"
         }
     }
 
     var detail: String {
         switch self {
-        case .home:
-            return "Manage installed apps"
+        case .tools:
+            return "Access device tools"
+        case .settings:
+            return "Configure StikDebug"
+        case .jit:
+            return "Enable JIT for eligible apps"
         case .scripts:
             return "Manage and run JS scripts"
-        case .tools:
-            return "Access additional tools"
         case .console:
             return "Live device logs"
         case .deviceInfo:
@@ -61,8 +66,8 @@ enum AppFeature: String, CaseIterable, Identifiable {
             return "Inspect running apps"
         case .location:
             return "Simulate GPS location"
-        case .settings:
-            return "Configure StikDebug"
+        case .launchApps:
+            return "Launch installed apps without JIT"
         }
     }
 
@@ -77,12 +82,14 @@ enum AppFeature: String, CaseIterable, Identifiable {
 
     var systemImage: String {
         switch self {
-        case .home:
-            return "square.grid.2x2"
+        case .tools:
+            return "house.fill"
+        case .settings:
+            return "gearshape.fill"
+        case .jit:
+            return "bolt.fill"
         case .scripts:
             return "scroll"
-        case .tools:
-            return "wrench.and.screwdriver"
         case .console:
             return "terminal"
         case .deviceInfo:
@@ -93,20 +100,53 @@ enum AppFeature: String, CaseIterable, Identifiable {
             return "rectangle.stack.person.crop"
         case .location:
             return "location"
-        case .settings:
-            return "gearshape.fill"
+        case .launchApps:
+            return "arrow.up.forward.app"
+        }
+    }
+
+    /// Section grouping on the tools hub (excludes tab-only cases).
+    var toolSection: ToolHubSection? {
+        switch self {
+        case .jit:
+            return .featured
+        case .launchApps, .scripts:
+            return .apps
+        case .console, .processes:
+            return .diagnostics
+        case .deviceInfo, .profiles, .location:
+            return .device
+        case .tools, .settings:
+            return nil
+        }
+    }
+
+    /// Distinct badge color per tool so sections scan quickly.
+    var hubPalette: HubPalette {
+        switch self {
+        case .jit: return .orange
+        case .launchApps: return .blue
+        case .scripts: return .purple
+        case .console: return .green
+        case .deviceInfo: return .indigo
+        case .profiles: return .pink
+        case .processes: return .teal
+        case .location: return .cyan
+        case .tools, .settings: return .gray
         }
     }
 
     @ViewBuilder
     var destination: some View {
         switch self {
-        case .home:
+        case .tools:
+            ToolsView()
+        case .settings:
+            SettingsView()
+        case .jit:
             HomeView()
         case .scripts:
             ScriptListView()
-        case .tools:
-            ToolsView()
         case .console:
             ConsoleLogsView()
         case .deviceInfo:
@@ -117,13 +157,51 @@ enum AppFeature: String, CaseIterable, Identifiable {
             ProcessInspectorView()
         case .location:
             LocationSimulationView()
-        case .settings:
-            SettingsView()
+        case .launchApps:
+            LaunchAppsView()
         }
     }
 }
 
+enum ToolHubSection: Int, CaseIterable, Identifiable {
+    case featured
+    case apps
+    case diagnostics
+    case device
+
+    var id: Int { rawValue }
+
+    var title: String {
+        switch self {
+        case .featured:
+            return "Debugging"
+        case .apps:
+            return "Apps & Scripts"
+        case .diagnostics:
+            return "Diagnostics"
+        case .device:
+            return "Device"
+        }
+    }
+
+    var tools: [AppFeature] {
+        AppFeature.toolList.filter { $0.toolSection == self }
+    }
+}
+
 extension AppFeature {
-    static let mainTabs: [AppFeature] = [.home, .tools, .settings]
-    static let toolList: [AppFeature] = [.scripts, .console, .deviceInfo, .profiles, .processes, .location]
+    /// Primary tab bar destinations.
+    static let mainTabs: [AppFeature] = [.tools, .settings]
+
+    /// Tools list (JIT first as the primary capability).
+    static let toolList: [AppFeature] = [
+        .jit,
+        .launchApps,
+        .scripts,
+        .console,
+        .deviceInfo,
+        .profiles,
+        .processes,
+        .location
+    ]
 }

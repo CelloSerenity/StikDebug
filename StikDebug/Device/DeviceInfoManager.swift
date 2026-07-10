@@ -134,7 +134,7 @@ final class DeviceInfoManager: ObservableObject {
 
 struct DeviceInfoView: View {
     @StateObject private var mgr = DeviceInfoManager()
-    @State private var importer = false
+    @ObservedObject private var pairingImport = PairingFileImportCoordinator.shared
     @State private var exportURL: URL?
     @State private var isShowingExporter = false
     @State private var shareItems: [Any] = []
@@ -269,14 +269,11 @@ struct DeviceInfoView: View {
                 }
                 ToolbarItem(placement: .navigationBarLeading) {
                     if !isPaired {
-                        Button { importer = true } label: {
+                        Button { pairingImport.requestImport() } label: {
                             Label("Import Pairing File", systemImage: "doc.badge.plus")
                         }
                     }
                 }
-            }
-            .fileImporter(isPresented: $importer, allowedContentTypes: PairingFileStore.supportedContentTypes) { result in
-                if case .success(let url) = result { importPairing(from: url) }
             }
             .fileExporter(
                 isPresented: $isShowingExporter,
@@ -288,6 +285,10 @@ struct DeviceInfoView: View {
                 ActivityViewController(items: shareItems)
             }
             .onAppear { if isPaired { mgr.initAndLoad() } }
+            .onReceive(NotificationCenter.default.publisher(for: .pairingFileImported)) { _ in
+                notify("Pairing File Added", "Your device is ready. Fetching device info.")
+                mgr.initAndLoad()
+            }
             .onDisappear { mgr.cleanup() }
             .onChange(of: mgr.error?.message) { _, _ in
                 if let err = mgr.error {
@@ -347,18 +348,6 @@ struct DeviceInfoView: View {
         withAnimation { justCopied = true }
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
             withAnimation { justCopied = false }
-        }
-    }
-
-    // MARK: - Pairing Import
-
-    private func importPairing(from src: URL) {
-        do {
-            try PairingFileStore.importFromPicker(src)
-            notify("Pairing File Added", "Your device is ready. Tap Reload to fetch info.")
-            mgr.initAndLoad()
-        } catch {
-            fail("Import Failed", error.localizedDescription)
         }
     }
 

@@ -9,6 +9,12 @@ import Foundation
 import UIKit
 import idevice
 
+struct InstalledAppInventory {
+    let debuggable: [String: String]
+    let nonDebuggable: [String: String]
+    let system: [String: String]
+}
+
 private enum IdeviceBridge {
     static let processQueue = DispatchQueue(label: "com.stikdebug.processInspector", qos: .userInitiated)
 
@@ -247,6 +253,38 @@ private enum IdeviceBridge {
         }
 
         return result
+    }
+
+    static func appInventory(from dictionaries: [[String: Any]]) -> InstalledAppInventory {
+        var debuggable: [String: String] = [:]
+        var nonDebuggable: [String: String] = [:]
+        var system: [String: String] = [:]
+
+        debuggable.reserveCapacity(dictionaries.count)
+        nonDebuggable.reserveCapacity(dictionaries.count)
+        system.reserveCapacity(dictionaries.count / 4)
+
+        for dictionary in dictionaries {
+            guard let bundleID = dictionary["CFBundleIdentifier"] as? String,
+                  !bundleID.isEmpty else {
+                continue
+            }
+
+            let name = appName(from: dictionary)
+            if hasGetTaskAllow(dictionary) {
+                debuggable[bundleID] = name
+            } else if isHiddenSystemApp(dictionary) {
+                system[bundleID] = name
+            } else {
+                nonDebuggable[bundleID] = name
+            }
+        }
+
+        return InstalledAppInventory(
+            debuggable: debuggable,
+            nonDebuggable: nonDebuggable,
+            system: system
+        )
     }
 
     static func activeTunnelHandles(for context: JITEnableContext) throws -> (adapter: OpaquePointer, handshake: OpaquePointer) {
@@ -520,24 +558,11 @@ extension JITEnableContext {
         }
     }
 
-    func getAllApps() throws -> [String: String] {
+    /// Fetches the installation-proxy payload once, then derives each app-list category.
+    func getInstalledAppInventory() throws -> InstalledAppInventory {
         try IdeviceBridge.withTunnelHandles(for: self) { adapter, handshake in
-            try IdeviceBridge.appDictionary(
-                adapter: adapter,
-                handshake: handshake,
-                requireGetTaskAllow: false
-            )
-        }
-    }
-
-    func getHiddenSystemApps() throws -> [String: String] {
-        try IdeviceBridge.withTunnelHandles(for: self) { adapter, handshake in
-            try IdeviceBridge.appDictionary(
-                adapter: adapter,
-                handshake: handshake,
-                requireGetTaskAllow: false,
-                filter: IdeviceBridge.isHiddenSystemApp
-            )
+            let dictionaries = try IdeviceBridge.plistDictionaries(adapter: adapter, handshake: handshake)
+            return IdeviceBridge.appInventory(from: dictionaries)
         }
     }
 
@@ -549,7 +574,7 @@ extension JITEnableContext {
         }
     }
 
-    func getAppIcon(withBundleId bundleId: String) throws -> UIImage {
+    func getAppIconData(withBundleId bundleId: String) throws -> Data {
         try IdeviceBridge.withTunnelHandles(for: self) { adapter, handshake in
             try IdeviceBridge.withConnectedClient(
                 fallback: "Failed to connect to SpringBoard Services",
@@ -569,12 +594,7 @@ extension JITEnableContext {
 
                 defer { free(rawIconData) }
 
-                let data = Data(bytes: rawIconData, count: rawIconLength)
-                guard let image = UIImage(data: data) else {
-                    throw IdeviceBridge.makeError(message: "Failed to decode app icon image")
-                }
-
-                return image
+                return Data(bytes: rawIconData, count: rawIconLength)
             }
         }
     }

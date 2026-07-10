@@ -6,26 +6,14 @@
 //  Created by neoarz on 3/28/25.
 //
 
-import UIKit
+import Foundation
 
-class AppStoreIconFetcher {
-    private static var cache = [String: UIImage]()
-    private static let queue = DispatchQueue(label: "com.stik.stikdebug.iconFetchQueue", attributes: .concurrent)
+enum AppStoreIconFetcher {
+    private static let queue = DispatchQueue(label: "com.stik.stikdebug.iconFetchQueue", qos: .utility)
 
-    static func getIcon(for bundleID: String, completion: @escaping (UIImage?) -> Void) {
-        if let icon = cache[bundleID] {
-            completion(icon)
-            return
-        }
-
+    static func getIconData(for bundleID: String, completion: @escaping (Data?) -> Void) {
         queue.async {
-            let icon = try? JITEnableContext.shared.getAppIcon(withBundleId: bundleID)
-            DispatchQueue.main.async {
-                if let img = icon {
-                    cache[bundleID] = img
-                }
-                completion(icon)
-            }
+            completion(try? JITEnableContext.shared.getAppIconData(withBundleId: bundleID))
         }
     }
 }

@@ -5,11 +5,12 @@
 
 import SwiftUI
 import UIKit
-import WidgetKit
 
 struct AppButton: View {
     let bundleID: String
     let appName: String
+    let isFavorite: Bool
+    let favoriteCount: Int
 
     @Binding var recentApps: [String]
     @Binding var favoriteApps: [String]
@@ -18,7 +19,7 @@ struct AppButton: View {
     @AppStorage("enableAdvancedOptions") private var enableAdvancedOptions = false
 
     var onSelectApp: (String, String) -> Void
-    let sharedDefaults: UserDefaults
+    let isPerformingPrimaryAction: Bool
 
     @State private var showScriptPicker = false
     @State private var assignedScriptName: String?
@@ -27,17 +28,21 @@ struct AppButton: View {
     init(
         bundleID: String,
         appName: String,
+        isFavorite: Bool,
+        favoriteCount: Int,
         recentApps: Binding<[String]>,
         favoriteApps: Binding<[String]>,
         onSelectApp: @escaping (String, String) -> Void,
-        sharedDefaults: UserDefaults
+        isPerformingPrimaryAction: Bool
     ) {
         self.bundleID = bundleID
         self.appName = appName
+        self.isFavorite = isFavorite
+        self.favoriteCount = favoriteCount
         self._recentApps = recentApps
         self._favoriteApps = favoriteApps
         self.onSelectApp = onSelectApp
-        self.sharedDefaults = sharedDefaults
+        self.isPerformingPrimaryAction = isPerformingPrimaryAction
         _iconLoader = StateObject(wrappedValue: IconLoader(bundleID: bundleID))
         _assignedScriptName = State(initialValue: AppButton.currentAssignment(for: bundleID))
     }
@@ -62,7 +67,10 @@ struct AppButton: View {
 
                 Spacer()
 
-                if favoriteApps.contains(bundleID) {
+                if isPerformingPrimaryAction {
+                    ProgressView()
+                        .controlSize(.small)
+                } else if isFavorite {
                     Image(systemName: "star.fill")
                         .imageScale(.medium)
                         .foregroundStyle(.yellow)
@@ -73,13 +81,14 @@ struct AppButton: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .disabled(isPerformingPrimaryAction)
         .contextMenu {
             Button(action: toggleFavorite) {
                 Label(
-                    favoriteApps.contains(bundleID) ? "Remove Favorite" : "Add to Favorites",
-                    systemImage: favoriteApps.contains(bundleID) ? "star.slash" : "star"
+                    isFavorite ? "Remove Favorite" : "Add to Favorites",
+                    systemImage: isFavorite ? "star.slash" : "star"
                 )
-                .disabled(!favoriteApps.contains(bundleID) && favoriteApps.count >= 4)
+                .disabled(!isFavorite && favoriteCount >= AppLibraryPreferences.maxFavorites)
             }
             Button {
                 copyBundleID()
@@ -104,7 +113,7 @@ struct AppButton: View {
             Button {
                 toggleFavorite()
             } label: {
-                Label(favoriteApps.contains(bundleID) ? "Unfavorite" : "Favorite", systemImage: "star")
+                Label(isFavorite ? "Unfavorite" : "Favorite", systemImage: "star")
             }
             .tint(.yellow)
 
@@ -129,7 +138,9 @@ struct AppButton: View {
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(String(format: "Enable JIT for %@".localized, appName))
         .accessibilityValue(accessibilityValue)
-        .accessibilityHint("Double-tap to open the app and enable JIT. Use the actions rotor for favorites or bundle ID.".localized)
+        .accessibilityHint(isPerformingPrimaryAction
+                           ? "A JIT request is in progress.".localized
+                           : "Double-tap to open the app and enable JIT. Use the actions rotor for favorites or bundle ID.".localized)
         .accessibilityAddTraits(.isButton)
         .accessibilityRemoveTraits(.isStaticText)
         .accessibilityAction(named: Text(favoriteAccessibilityActionLabel)) {
@@ -142,7 +153,7 @@ struct AppButton: View {
 
     private var accessibilityValue: String {
         var parts = [String(format: "Bundle ID %@".localized, bundleID)]
-        if favoriteApps.contains(bundleID) {
+        if isFavorite {
             parts.append("Favorite".localized)
         }
         if let assignedScriptName {
@@ -152,7 +163,7 @@ struct AppButton: View {
     }
 
     private var favoriteAccessibilityActionLabel: String {
-        favoriteApps.contains(bundleID)
+        isFavorite
             ? "Remove from Favorites".localized
             : "Add to Favorites".localized
     }
@@ -168,29 +179,25 @@ struct AppButton: View {
         Haptics.selection()
         recentApps.removeAll { $0 == bundleID }
         recentApps.insert(bundleID, at: 0)
-        if recentApps.count > 3 {
-            recentApps = Array(recentApps.prefix(3))
+        if recentApps.count > AppLibraryPreferences.maxRecents {
+            recentApps = Array(recentApps.prefix(AppLibraryPreferences.maxRecents))
         }
-        persistIfChanged()
         onSelectApp(bundleID, appName)
     }
 
     private func toggleFavorite() {
         Haptics.light()
-        let wasFavorite = favoriteApps.contains(bundleID)
 
-        if wasFavorite {
+        if isFavorite {
             favoriteApps.removeAll { $0 == bundleID }
-        } else if favoriteApps.count < 4 {
+            AccessibilityAnnouncer.announce("Removed from Favorites".localized)
+        } else if favoriteCount < AppLibraryPreferences.maxFavorites {
             favoriteApps.insert(bundleID, at: 0)
             recentApps.removeAll { $0 == bundleID }
+            AccessibilityAnnouncer.announce("Added to Favorites".localized)
         } else {
             AccessibilityAnnouncer.announce("Favorites are full".localized)
-            return
         }
-
-        persistIfChanged()
-        AccessibilityAnnouncer.announce(wasFavorite ? "Removed from Favorites".localized : "Added to Favorites".localized)
     }
 
     private func copyBundleID() {
@@ -219,23 +226,6 @@ struct AppButton: View {
         ScriptStore.assignedScriptName(for: bundleID)
     }
 
-    private func persistIfChanged() {
-        var touched = false
-        let previousRecents = (sharedDefaults.array(forKey: "recentApps") as? [String]) ?? []
-        let previousFavorites = (sharedDefaults.array(forKey: "favoriteApps") as? [String]) ?? []
-
-        if previousRecents != recentApps {
-            sharedDefaults.set(recentApps, forKey: "recentApps")
-            touched = true
-        }
-        if previousFavorites != favoriteApps {
-            sharedDefaults.set(favoriteApps, forKey: "favoriteApps")
-            touched = true
-        }
-        if touched {
-            WidgetCenter.shared.reloadAllTimelines()
-        }
-    }
 }
 
 struct LaunchAppRow: View {
