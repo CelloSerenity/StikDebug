@@ -16,7 +16,6 @@ struct HomeView: View {
 
     @State private var hasAppeared = false
     @State private var pendingJITEnableConfiguration: JITEnableConfiguration?
-    @State private var isShowingPairingFilePicker = false
     @State private var debugFeedback: DebugFeedback?
     @State private var pendingExternalURLAction: HomeExternalAction?
     @State private var scriptRunModel: RunJSViewModel?
@@ -35,7 +34,7 @@ struct HomeView: View {
             bundleID = selectedBundle
             Haptics.medium()
             startJITInBackground(bundleID: selectedBundle, displayName: selectedName)
-        }, showDoneButton: false, onImportPairingFile: { isShowingPairingFilePicker = true })
+        }, showDoneButton: false)
         .overlay(alignment: .bottom) {
             if let debugFeedback {
                 debugFeedbackView(debugFeedback)
@@ -74,11 +73,6 @@ struct HomeView: View {
         } message: { action in
             Text(action.message)
         }
-        .fileImporter(
-            isPresented: $isShowingPairingFilePicker,
-            allowedContentTypes: PairingFileStore.supportedContentTypes,
-            onCompletion: importPairingFile
-        )
         .sheet(item: $scriptRunModel) { model in
             NavigationStack {
                 RunJSView(model: model)
@@ -124,23 +118,6 @@ struct HomeView: View {
         MountingProgress.shared.checkforMounted()
     }
 
-    private func importPairingFile(_ result: Result<URL, Error>) {
-        switch result {
-        case .success(let url):
-            do {
-                try PairingFileStore.importFromPicker(url)
-                markTunnelDisconnected()
-                startTunnelInBackground()
-                NotificationCenter.default.post(name: .pairingFileImported, object: nil)
-                AlertPresenter.dismissPresentedAlert()
-            } catch {
-                LogManager.shared.addErrorLog("Failed to import pairing file: \(error.localizedDescription)")
-            }
-        case .failure(let error):
-            LogManager.shared.addErrorLog("Pairing file picker failed: \(error.localizedDescription)")
-        }
-    }
-
     private func queryValue(_ names: [String], in components: URLComponents?) -> String? {
         guard let queryItems = components?.queryItems else { return nil }
         for name in names {
@@ -156,6 +133,7 @@ struct HomeView: View {
 
     private func handleExternalURL(_ url: URL) {
         guard let host = url.host()?.lowercased() else { return }
+        DeviceProfileStore.activateLocalForExternalRequest()
         let components = URLComponents(url: url, resolvingAgainstBaseURL: false)
 
         switch host {
@@ -209,6 +187,7 @@ struct HomeView: View {
     }
 
     private func performExternalURLAction(_ action: HomeExternalAction) {
+        DeviceProfileStore.activateLocalForExternalRequest()
         switch action {
         case .enableJIT(let config):
             if hasAppeared {

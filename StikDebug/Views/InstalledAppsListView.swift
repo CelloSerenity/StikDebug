@@ -14,7 +14,6 @@ struct InstalledAppsListView: View {
 
     let onSelectApp: (String, String) -> Void
     let showDoneButton: Bool
-    let onImportPairingFile: (() -> Void)?
 
     private let sharedDefaults = UserDefaults(suiteName: ScriptStore.favoriteAppNamesSuiteName) ?? .standard
 
@@ -44,12 +43,10 @@ struct InstalledAppsListView: View {
 
     init(
         onSelectApp: @escaping (String, String) -> Void,
-        showDoneButton: Bool = true,
-        onImportPairingFile: (() -> Void)? = nil
+        showDoneButton: Bool = true
     ) {
         self.onSelectApp = onSelectApp
         self.showDoneButton = showDoneButton
-        self.onImportPairingFile = onImportPairingFile
     }
 
     var body: some View {
@@ -67,7 +64,6 @@ struct InstalledAppsListView: View {
                 )
                 .toolbar {
                     tabPickerToolbarItem
-                    leadingToolbarItem
                     trailingToolbarItem
                 }
         }
@@ -137,17 +133,6 @@ struct InstalledAppsListView: View {
             }
             .pickerStyle(.segmented)
             .frame(width: 220)
-        }
-    }
-
-    @ToolbarContentBuilder
-    private var leadingToolbarItem: some ToolbarContent {
-        if let onImportPairingFile {
-            ToolbarItem(placement: .navigationBarLeading) {
-                Button(action: onImportPairingFile) {
-                    Image(systemName: "doc.badge.plus")
-                }
-            }
         }
     }
 

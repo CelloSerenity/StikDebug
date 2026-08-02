@@ -40,6 +40,8 @@ final class JITEnableContext {
     private var tunnelConnecting = false
     private var tunnelSemaphore: DispatchSemaphore?
     private var lastTunnelError: NSError?
+    private var connectedProfileID: String?
+    private var tunnelConnectionGeneration: UInt64 = 0
 
     private let syslogQueue = DispatchQueue(label: "com.stik.syslogrelay.queue")
     private var syslogStreaming = false
@@ -113,9 +115,7 @@ final class JITEnableContext {
         logger?(message)
     }
 
-    private func getPairingFile() throws -> OpaquePointer {
-        let pairingFileURL = PairingFileStore.prepareURL()
-
+    private func getPairingFile(at pairingFileURL: URL) throws -> OpaquePointer {
         guard FileManager.default.fileExists(atPath: pairingFileURL.path) else {
             throw makeError("Pairing file not found!", code: -17)
         }
@@ -136,20 +136,38 @@ final class JITEnableContext {
         return pairingFile
     }
 
-    private func createTunnel(hostname: String) throws -> TunnelHandles {
-        let pairingFile = try getPairingFile()
+    private func getPairingFile(for profile: DeviceProfile) throws -> OpaquePointer {
+        try getPairingFile(at: PairingFileStore.prepareURL(for: profile.id))
+    }
+
+    private func createTunnel(
+        hostname: String,
+        profile: DeviceProfile = DeviceProfileStore.selectedProfile(),
+        pairingFileURL: URL? = nil,
+        shouldCancel: (() -> Bool)? = nil
+    ) throws -> TunnelHandles {
+        try throwIfTunnelConnectionCancelled(shouldCancel)
+        try DeviceConnectionContext.requireReachable(profile)
+        try throwIfTunnelConnectionCancelled(shouldCancel)
+        let pairingFile: OpaquePointer
+        if let pairingFileURL {
+            pairingFile = try getPairingFile(at: pairingFileURL)
+        } else {
+            pairingFile = try getPairingFile(for: profile)
+        }
         defer { rp_pairing_file_free(pairingFile) }
 
         var addr = sockaddr_in()
         addr.sin_family = sa_family_t(AF_INET)
-        addr.sin_port = in_port_t(49152).bigEndian
+        addr.sin_port = in_port_t(DeviceConnectionContext.tunnelPort).bigEndian
 
-        let deviceIP = DeviceConnectionContext.targetIPAddress
+        let deviceIP = profile.ipAddress
         let parseResult = deviceIP.withCString { inet_pton(AF_INET, $0, &addr.sin_addr) }
         guard parseResult == 1 else {
             throw makeError("Failed to parse target IP address.", code: -18)
         }
 
+        try throwIfTunnelConnectionCancelled(shouldCancel)
         var tunnel = TunnelHandles()
         let ffiError = hostname.withCString { hostname in
             withUnsafePointer(to: &addr) { pointer in
@@ -181,7 +199,95 @@ final class JITEnableContext {
         return tunnel
     }
 
-    func startTunnel() throws {
+    private func throwIfTunnelConnectionCancelled(_ shouldCancel: (() -> Bool)?) throws {
+        if shouldCancel?() == true {
+            throw makeError("Device connection was cancelled.", code: NSUserCancelledError)
+        }
+    }
+
+    private func tunnelConnectionWasCancelled(_ generation: UInt64) -> Bool {
+        tunnelLock.lock()
+        let wasCancelled = generation != tunnelConnectionGeneration
+        tunnelLock.unlock()
+        return wasCancelled
+    }
+
+    func cancelPendingTunnelConnections() {
+        tunnelLock.lock()
+        tunnelConnectionGeneration &+= 1
+        lastTunnelError = nil
+        tunnelLock.unlock()
+    }
+
+    func inspectDevice(profile: DeviceProfile, pairingFileData: Data) throws -> DeviceConnectionInspection {
+        let pairingFileURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+            .appendingPathExtension("plist")
+        try pairingFileData.write(to: pairingFileURL, options: .atomic)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: pairingFileURL.path)
+        defer { try? FileManager.default.removeItem(at: pairingFileURL) }
+
+        var tunnel = try createTunnel(
+            hostname: "StikDebug Device Validation",
+            profile: profile,
+            pairingFileURL: pairingFileURL
+        )
+        defer { tunnel.free() }
+
+        guard let adapter = tunnel.adapter, let handshake = tunnel.handshake else {
+            throw makeError("Tunnel was created without valid handles")
+        }
+
+        var lockdownClient: OpaquePointer?
+        if let ffiError = lockdownd_connect_rsd(adapter, handshake, &lockdownClient) {
+            throw error(from: ffiError, fallback: "Failed to connect to lockdownd")
+        }
+        guard let lockdownClient else {
+            throw makeError("Lockdownd client was not created")
+        }
+        defer { lockdownd_client_free(lockdownClient) }
+
+        var plistObject: plist_t?
+        if let ffiError = lockdownd_get_value(lockdownClient, nil, nil, &plistObject) {
+            throw error(from: ffiError, fallback: "Failed to fetch device information")
+        }
+        guard let plistObject else {
+            throw makeError("Device information was empty")
+        }
+        defer { plist_free(plistObject) }
+
+        var xml: UnsafeMutablePointer<CChar>?
+        var xmlLength: UInt32 = 0
+        guard plist_to_xml(plistObject, &xml, &xmlLength) == PLIST_ERR_SUCCESS,
+              let xml,
+              xmlLength > 0 else {
+            throw makeError("Failed to read device information")
+        }
+        defer { plist_mem_free(xml) }
+
+        let data = Data(bytes: xml, count: Int(xmlLength))
+        guard let values = try PropertyListSerialization.propertyList(
+            from: data,
+            options: [],
+            format: nil
+        ) as? [String: Any],
+              let productType = values["ProductType"] as? String,
+              let productVersion = values["ProductVersion"] as? String,
+              let osMajorVersion = Int(productVersion.split(separator: ".").first ?? "") else {
+            throw makeError("ProductType or ProductVersion was not returned by the device")
+        }
+
+        return DeviceConnectionInspection(
+            productType: productType,
+            productVersion: productVersion,
+            hasTXM: ProcessInfo.hasTXMSupport(
+                osMajorVersion: osMajorVersion,
+                hardwareIdentifier: productType
+            )
+        )
+    }
+
+    func startTunnel(profile: DeviceProfile = DeviceProfileStore.selectedProfile()) throws {
         tunnelLock.lock()
         if tunnelConnecting {
             let waitSemaphore = tunnelSemaphore
@@ -192,13 +298,23 @@ final class JITEnableContext {
                 waitSemaphore.signal()
             }
 
-            if let lastTunnelError {
-                throw lastTunnelError
+            tunnelLock.lock()
+            let completedError = lastTunnelError
+            let completedProfileID = connectedProfileID
+            tunnelLock.unlock()
+
+            if completedProfileID != profile.id {
+                try startTunnel(profile: profile)
+                return
+            }
+            if let completedError {
+                throw completedError
             }
             return
         }
 
         tunnelConnecting = true
+        let connectionGeneration = tunnelConnectionGeneration
         let completionSemaphore = DispatchSemaphore(value: 0)
         tunnelSemaphore = completionSemaphore
         tunnelLock.unlock()
@@ -217,7 +333,11 @@ final class JITEnableContext {
         }
 
         do {
-            let newTunnel = try createTunnel(hostname: "StikDebug")
+            let newTunnel = try createTunnel(
+                hostname: "StikDebug",
+                profile: profile,
+                shouldCancel: { self.tunnelConnectionWasCancelled(connectionGeneration) }
+            )
             newAdapter = newTunnel.adapter
             newHandshake = newTunnel.handshake
         } catch let tunnelError as NSError {
@@ -225,20 +345,34 @@ final class JITEnableContext {
             throw tunnelError
         }
 
+        tunnelLock.lock()
+        if connectionGeneration != tunnelConnectionGeneration {
+            tunnelLock.unlock()
+            var cancelledTunnel = TunnelHandles(adapter: newAdapter, handshake: newHandshake)
+            cancelledTunnel.free()
+            let cancellationError = makeError("Device connection was cancelled.", code: NSUserCancelledError)
+            finalError = cancellationError
+            throw cancellationError
+        }
         if let handshake {
             rsd_handshake_free(handshake)
         }
         if let adapter {
             adapter_free(adapter)
         }
-
         adapter = newAdapter
         handshake = newHandshake
+        connectedProfileID = profile.id
+        tunnelLock.unlock()
     }
 
     func ensureTunnel() throws {
-        if adapter == nil || handshake == nil {
-            try startTunnel()
+        let selectedProfile = DeviceProfileStore.selectedProfile()
+        tunnelLock.lock()
+        let needsTunnel = adapter == nil || handshake == nil || connectedProfileID != selectedProfile.id
+        tunnelLock.unlock()
+        if needsTunnel {
+            try startTunnel(profile: selectedProfile)
         }
     }
 

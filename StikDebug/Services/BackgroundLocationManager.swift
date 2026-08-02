@@ -22,6 +22,10 @@ final class BackgroundLocationManager: NSObject, CLLocationManagerDelegate {
     }
 
     func start() {
+        guard DeviceProfileStore.selectedProfile().isLocal else {
+            stop()
+            return
+        }
         isRunning = true
         switch locationManager.authorizationStatus {
         case .authorizedAlways:
@@ -41,9 +45,20 @@ final class BackgroundLocationManager: NSObject, CLLocationManagerDelegate {
     }
 
     func requestStart() {
+        guard DeviceProfileStore.selectedProfile().isLocal else { return }
         activityCount += 1
         if activityCount == 1, UserDefaults.standard.bool(forKey: "keepAliveLocation") {
             start()
+        }
+    }
+
+    func selectedDeviceDidChange() {
+        if DeviceProfileStore.selectedProfile().isLocal,
+           activityCount > 0,
+           UserDefaults.standard.bool(forKey: "keepAliveLocation") {
+            start()
+        } else {
+            stop()
         }
     }
 

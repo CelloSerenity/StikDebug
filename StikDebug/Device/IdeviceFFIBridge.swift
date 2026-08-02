@@ -859,3 +859,7 @@ func clear_simulated_location() -> Int32 {
 
     return LocationSimulationStatus.ok
 }
+
+func reset_location_simulation() {
+    LocationSimulationState.cleanup()
+}

@@ -36,6 +36,7 @@ final class DebugKeepAliveLease {
     }
 
     private func activate() {
+        guard DeviceProfileStore.selectedProfile().isLocal else { return }
         stateLock.lock()
         guard !isActive else {
             stateLock.unlock()

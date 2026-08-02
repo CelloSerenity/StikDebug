@@ -124,6 +124,7 @@ struct MainTabView: View {
 
     private func handleURL(_ url: URL) {
         guard let host = url.host()?.lowercased() else { return }
+        DeviceProfileStore.activateLocalForExternalRequest()
 
         switch host {
         case "simulate-location", "set-location":
@@ -176,6 +177,7 @@ struct MainTabView: View {
     }
 
     private func performLocationAction(_ action: ExternalLocationAction) {
+        DeviceProfileStore.activateLocalForExternalRequest()
         switch action {
         case .simulate(let url, _, _):
             simulateLocation(from: url)

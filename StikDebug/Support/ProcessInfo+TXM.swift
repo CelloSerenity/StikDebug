@@ -7,37 +7,40 @@ import Foundation
 
 public extension ProcessInfo {
     var hasTXM: Bool {
-        if isTXMOverridden {
-            return true
-        }
+        DeviceProfileStore.selectedProfile().runScripts
+    }
 
-        let hardware = hardwareIdentifier()
-
-        if ProcessInfo.isIOS27OrNewer {
-            return hardware != "iPad8,11" && hardware != "iPad8,12"
-        }
-
-        if ProcessInfo.isIOS26OrNewer {
-            return ProcessInfo.hasTXMSupport(
-                hardwareIdentifier: hardware
-            )
-        }
-
-        return false
+    var hasDetectedTXM: Bool {
+        ProcessInfo.hasTXMSupport(
+            osMajorVersion: operatingSystemVersion.majorVersion,
+            hardwareIdentifier: hardwareIdentifier()
+        )
     }
 
     var isTXMOverridden: Bool {
-        UserDefaults.standard.bool(forKey: UserDefaults.Keys.txmOverride)
+        hasTXM && !hasDetectedTXM
     }
 
     internal static func hasTXMSupport(
+        osMajorVersion: Int,
         hardwareIdentifier: String
     ) -> Bool {
+        guard osMajorVersion >= 26 else { return false }
+
         let firstTXM = 14.2
         let iPadTXM = 14.5
+        let appleTVTXM = 14.1
 
         guard let ver = ProcessInfo.processInfo.deviceVersion(from: hardwareIdentifier) else {
             return false
+        }
+
+        if hardwareIdentifier.hasPrefix("AppleTV") {
+            return ver >= appleTVTXM
+        }
+
+        if osMajorVersion >= 27 {
+            return hardwareIdentifier != "iPad8,11" && hardwareIdentifier != "iPad8,12"
         }
 
         if hardwareIdentifier.hasPrefix("iPad") {
@@ -50,6 +53,7 @@ public extension ProcessInfo {
     func deviceVersion(from identifier: String) -> Double? {
         let iPhonePattern = #"iPhone(\d+),(\d+)"#
         let iPadPattern = #"iPad(\d+),(\d+)"#
+        let appleTVPattern = #"AppleTV(\d+),(\d+)"#
 
         let extractVersion: (_ pattern: String) -> Double? = { pattern in
             guard let regex = try? NSRegularExpression(pattern: pattern),
@@ -69,23 +73,7 @@ public extension ProcessInfo {
             return major + (minor / divisor)
         }
 
-        return extractVersion(iPhonePattern) ?? extractVersion(iPadPattern)
-    }
-
-    private static var isIOS26OrNewer: Bool {
-        if #available(iOS 26.0, *) {
-            return true
-        }
-
-        return false
-    }
-
-    private static var isIOS27OrNewer: Bool {
-        if #available(iOS 27.0, *) {
-            return true
-        }
-
-        return false
+        return extractVersion(iPhonePattern) ?? extractVersion(iPadPattern) ?? extractVersion(appleTVPattern)
     }
 
     private func hardwareIdentifier() -> String {

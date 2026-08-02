@@ -11,6 +11,7 @@ final class TunnelManager: ObservableObject {
     @Published private(set) var isConnected = false
 
     private var isStarting = false
+    private var startGeneration: UInt64 = 0
 
     private init() {}
 
@@ -18,6 +19,19 @@ final class TunnelManager: ObservableObject {
         runOnMain {
             self.isConnected = false
         }
+    }
+
+    func selectedDeviceDidChange() {
+        guard Thread.isMainThread else {
+            DispatchQueue.main.async {
+                self.selectedDeviceDidChange()
+            }
+            return
+        }
+
+        startGeneration &+= 1
+        isConnected = false
+        JITEnableContext.shared.cancelPendingTunnelConnections()
     }
 
     func start(showErrorUI: Bool = true) {
@@ -28,7 +42,8 @@ final class TunnelManager: ObservableObject {
             return
         }
 
-        let pairingFileURL = PairingFileStore.prepareURL()
+        let profile = DeviceProfileStore.selectedProfile()
+        let pairingFileURL = PairingFileStore.prepareURL(for: profile.id)
         guard FileManager.default.fileExists(atPath: pairingFileURL.path) else {
             isConnected = false
             return
@@ -39,24 +54,43 @@ final class TunnelManager: ObservableObject {
         }
 
         isStarting = true
+        let generation = startGeneration
 
         DispatchQueue.global(qos: .userInteractive).async { [showErrorUI] in
             let result: Result<Void, NSError>
             do {
-                try JITEnableContext.shared.startTunnel()
+                try JITEnableContext.shared.startTunnel(profile: profile)
                 result = .success(())
             } catch {
                 result = .failure(error as NSError)
             }
 
             DispatchQueue.main.async {
-                self.finishStart(result, showErrorUI: showErrorUI)
+                self.finishStart(
+                    result,
+                    profileID: profile.id,
+                    generation: generation,
+                    showErrorUI: showErrorUI
+                )
             }
         }
     }
 
-    private func finishStart(_ result: Result<Void, NSError>, showErrorUI: Bool) {
+    private func finishStart(
+        _ result: Result<Void, NSError>,
+        profileID: String,
+        generation: UInt64,
+        showErrorUI: Bool
+    ) {
         isStarting = false
+
+        if generation != startGeneration || DeviceProfileStore.selectedProfileID() != profileID {
+            isConnected = false
+            if PairingFileStore.hasPairingFile(for: DeviceProfileStore.selectedProfileID()) {
+                start(showErrorUI: showErrorUI)
+            }
+            return
+        }
 
         switch result {
         case .success:

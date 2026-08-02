@@ -14,6 +14,7 @@ extension UserDefaults {
         static let bundleScriptMap = "BundleScriptMap"
         static let defaultScriptName = "DefaultScriptName"
         static let defaultScriptNameValue = ""
-        static let targetDeviceIP = "TunnelDeviceIP"
+        static let deviceProfiles = "DeviceProfiles"
+        static let selectedDeviceProfileID = "SelectedDeviceProfileID"
     }
 }

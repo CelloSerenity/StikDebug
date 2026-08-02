@@ -13,16 +13,21 @@ private enum SettingsLinks {
     static let discord = URL(string: "https://discord.gg/qahjXNTDwS")!
 }
 
-struct SettingsView: View {
-    @AppStorage(UserDefaults.Keys.txmOverride) private var overrideTXMDetection = false
-    @AppStorage(UserDefaults.Keys.confirmExternalJITRequests) private var confirmExternalJITRequests = true
-    @AppStorage("keepAliveAudio") private var keepAliveAudio = true
-    @AppStorage("keepAliveLocation") private var keepAliveLocation = true
-    @AppStorage(UserDefaults.Keys.targetDeviceIP) private var targetDeviceIP = DeviceConnectionContext.defaultTargetIPAddress
+private struct DeviceProfileEditorConfiguration: Identifiable {
+    let id = UUID()
+    let profile: DeviceProfile?
+}
 
-    @State private var isShowingPairingFilePicker = false
-    @State private var isImportingFile = false
-    @State private var pairingImportMessage: (text: String, isError: Bool)?
+private struct DeviceProfileDraft {
+    let name: String
+    let ipAddress: String
+    let pairingFileData: Data?
+}
+
+struct SettingsView: View {
+    @State private var activeDeviceName = DeviceProfileStore.selectedProfile().name
+    @State private var activeDeviceID = DeviceProfileStore.selectedProfileID()
+    @State private var activeDeviceIsConnected: Bool?
     @State private var showDDIConfirmation = false
     @State private var isRedownloadingDDI = false
     @State private var ddiDownloadProgress: Double = 0.0
@@ -59,90 +64,31 @@ struct SettingsView: View {
                     }
                 }
 
-                Section("Pairing File") {
-                    Button {
-                        isShowingPairingFilePicker = true
+                Section("Device Profiles") {
+                    NavigationLink {
+                        DeviceProfilesManagerView()
                     } label: {
-                        Label("Import Pairing File", systemImage: "doc.badge.plus")
+                        LabeledContent("Active Device", value: activeDeviceName)
                     }
-                    .disabled(isImportingFile)
-
-                    if isImportingFile {
+                    if let activeDeviceIsConnected {
+                        Label(
+                            activeDeviceIsConnected ? "Connected" : "Disconnected",
+                            systemImage: activeDeviceIsConnected
+                                ? "checkmark.circle.fill"
+                                : "xmark.circle.fill"
+                        )
+                        .foregroundStyle(activeDeviceIsConnected ? .green : .red)
+                    } else {
                         HStack(spacing: 10) {
                             ProgressView()
                                 .controlSize(.small)
-                            Text("Importing pairing file…")
-                                .font(.caption)
+                            Text("Checking Connection")
                                 .foregroundStyle(.secondary)
-                        }
-                    } else if let pairingImportMessage {
-                        Label(
-                            pairingImportMessage.text,
-                            systemImage: pairingImportMessage.isError ? "exclamationmark.triangle.fill" : "checkmark.circle.fill"
-                        )
-                        .font(.caption)
-                        .foregroundStyle(pairingImportMessage.isError ? .red : .green)
-                    }
-                }
-
-                Section {
-                    Toggle(isOn: $keepAliveAudio) {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("Silent Audio")
-                            Text("Plays inaudible audio so iOS keeps the app running.")
-                                .font(.caption).foregroundStyle(.secondary)
-                        }
-                    }
-                    .onChange(of: keepAliveAudio) { _, enabled in
-                        if enabled { BackgroundAudioManager.shared.start() }
-                        else { BackgroundAudioManager.shared.stop() }
-                    }
-
-                    Toggle(isOn: $keepAliveLocation) {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("Background Location")
-                            Text("Uses low-accuracy location to stay alive when an activity needs it.")
-                                .font(.caption).foregroundStyle(.secondary)
-                        }
-                    }
-                    .onChange(of: keepAliveLocation) { _, enabled in
-                        if !enabled { BackgroundLocationManager.shared.stop() }
-                    }
-
-                } header: {
-                    Text("Background Keep-Alive")
-                }
-
-                Section("Behavior") {
-                    Toggle(isOn: $confirmExternalJITRequests) {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("Confirm JIT Links")
-                            Text("Ask before external links enable JIT or run scripts.")
-                                .font(.caption).foregroundStyle(.secondary)
-                        }
-                    }
-
-                    Toggle(isOn: $overrideTXMDetection) {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("Always Run Scripts")
-                            Text("Treats device as TXM-capable to bypass hardware checks.")
-                                .font(.caption).foregroundStyle(.secondary)
                         }
                     }
                 }
 
                 Section("Advanced") {
-                    HStack {
-                        Text("Target Device IP")
-                        Spacer()
-                        TextField(DeviceConnectionContext.defaultTargetIPAddress, text: $targetDeviceIP)
-                            .multilineTextAlignment(.trailing)
-                            .foregroundStyle(.secondary)
-                            .textInputAutocapitalization(.never)
-                            .autocorrectionDisabled(true)
-                            .keyboardType(.numbersAndPunctuation)
-                            .frame(maxWidth: 160)
-                    }
                     Button { openAppFolder() } label: {
                         Label("App Folder", systemImage: "folder")
                     }.foregroundStyle(.primary)
@@ -179,35 +125,14 @@ struct SettingsView: View {
                 }
             }
             .navigationTitle("Settings")
-        }
-        .fileImporter(
-            isPresented: $isShowingPairingFilePicker,
-            allowedContentTypes: PairingFileStore.supportedContentTypes,
-            allowsMultipleSelection: false
-        ) { result in
-            switch result {
-            case .success(let urls):
-                guard let url = urls.first else { return }
-
-                let fileManager = FileManager.default
-                isImportingFile = true
-                pairingImportMessage = nil
-
-                do {
-                    try PairingFileStore.importFromPicker(url, fileManager: fileManager)
-                    isImportingFile = false
-                    pairingImportMessage = ("Imported successfully", false)
-                    startTunnelInBackground()
-                    schedulePairingStatusDismiss()
-                } catch {
-                    isImportingFile = false
-                    pairingImportMessage = ("Import failed: \(error.localizedDescription)", true)
-                    schedulePairingStatusDismiss()
-                }
-            case .failure(let error):
-                isImportingFile = false
-                pairingImportMessage = ("Import failed: \(error.localizedDescription)", true)
-                schedulePairingStatusDismiss()
+            .onAppear {
+                refreshActiveDevice()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .pairingFileImported)) { _ in
+                refreshActiveDevice()
+            }
+            .task(id: activeDeviceID) {
+                await monitorActiveDeviceConnection()
             }
         }
         .confirmationDialog("Redownload DDI Files?", isPresented: $showDDIConfirmation, titleVisibility: .visible) {
@@ -223,12 +148,32 @@ struct SettingsView: View {
     private var versionFooter: String {
         let processInfo = ProcessInfo.processInfo
         let txmLabel: String
-        if processInfo.isTXMOverridden {
-            txmLabel = "TXM (Override)"
-        } else {
-            txmLabel = processInfo.hasTXM ? "TXM" : "Non TXM"
-        }
+        txmLabel = processInfo.hasDetectedTXM ? "TXM" : "Non TXM"
         return "Version \(appVersion) • iOS \(UIDevice.current.systemVersion) • \(txmLabel)"
+    }
+
+    private func refreshActiveDevice() {
+        let selectedProfileID = DeviceProfileStore.selectedProfileID()
+        if activeDeviceID != selectedProfileID {
+            activeDeviceIsConnected = nil
+        }
+        activeDeviceName = DeviceProfileStore.selectedProfile().name
+        activeDeviceID = selectedProfileID
+    }
+
+    private func monitorActiveDeviceConnection() async {
+        while !Task.isCancelled {
+            let profile = DeviceProfileStore.selectedProfile()
+            let profileID = profile.id
+            let isConnected = await DeviceConnectionContext.isReachable(profile)
+            guard !Task.isCancelled, profileID == DeviceProfileStore.selectedProfileID() else { return }
+            activeDeviceIsConnected = isConnected
+            do {
+                try await Task.sleep(nanoseconds: 3_000_000_000)
+            } catch {
+                return
+            }
+        }
     }
 
     // MARK: - Business Logic
@@ -271,17 +216,6 @@ struct SettingsView: View {
         scheduleDDIStatusDismiss()
     }
 
-    private func schedulePairingStatusDismiss() {
-        Task {
-            try? await Task.sleep(nanoseconds: 4_000_000_000)
-            await MainActor.run {
-                if !isImportingFile {
-                    pairingImportMessage = nil
-                }
-            }
-        }
-    }
-
     private func scheduleDDIStatusDismiss() {
         Task {
             try? await Task.sleep(nanoseconds: 4_000_000_000)
@@ -289,6 +223,484 @@ struct SettingsView: View {
                 if !isRedownloadingDDI {
                     ddiResultMessage = nil
                 }
+            }
+        }
+    }
+}
+
+private struct DeviceProfilesManagerView: View {
+    @State private var profiles = DeviceProfileStore.profiles()
+    @State private var selectedProfileID = DeviceProfileStore.selectedProfileID()
+    @State private var profileEditor: DeviceProfileEditorConfiguration?
+
+    var body: some View {
+        List {
+            Section {
+                ForEach(profiles) { profile in
+                    NavigationLink {
+                        DeviceProfileDetailView(profileID: profile.id) {
+                            reload()
+                        }
+                    } label: {
+                        HStack(spacing: 12) {
+                            VStack(alignment: .leading, spacing: 3) {
+                                HStack(spacing: 6) {
+                                    Text(profile.name)
+                                    if profile.id == selectedProfileID {
+                                        Image(systemName: "checkmark.circle.fill")
+                                            .foregroundStyle(.green)
+                                    }
+                                }
+                                Text(profile.ipAddress)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                }
+            }
+
+            Section {
+                Button {
+                    profileEditor = DeviceProfileEditorConfiguration(profile: nil)
+                } label: {
+                    Label("Add Device", systemImage: "plus")
+                }
+            }
+        }
+        .navigationTitle("Device Profiles")
+        .onAppear {
+            reload()
+        }
+        .sheet(item: $profileEditor) { configuration in
+            DeviceProfileEditorView(profile: configuration.profile, allowsPairingImport: true) { draft in
+                guard let pairingFileData = draft.pairingFileData else {
+                    throw NSError(
+                        domain: "StikDebug.DeviceProfile",
+                        code: -1,
+                        userInfo: [NSLocalizedDescriptionKey: "Select a pairing file before adding the device."]
+                    )
+                }
+
+                let candidate = DeviceProfile(
+                    id: UUID().uuidString,
+                    name: draft.name,
+                    ipAddress: draft.ipAddress,
+                    runScripts: false
+                )
+                let inspection = try await inspectDevice(
+                    profile: candidate,
+                    pairingFileData: pairingFileData
+                )
+                let profile = DeviceProfileStore.addProfile(
+                    name: draft.name,
+                    ipAddress: draft.ipAddress,
+                    runScripts: inspection.hasTXM,
+                    txmDetected: inspection.hasTXM
+                )
+                do {
+                    try PairingFileStore.replace(with: pairingFileData, for: profile.id)
+                } catch {
+                    try? PairingFileStore.remove(for: profile.id)
+                    DeviceProfileStore.delete(profile.id)
+                    throw error
+                }
+                DeviceProfileStore.activate(profile.id)
+                reload()
+            }
+        }
+    }
+
+    private func reload() {
+        profiles = DeviceProfileStore.profiles()
+        selectedProfileID = DeviceProfileStore.selectedProfileID()
+    }
+}
+
+private struct DeviceProfileDetailView: View {
+    @Environment(\.dismiss) private var dismiss
+
+    @AppStorage(UserDefaults.Keys.confirmExternalJITRequests) private var confirmExternalJITRequests = true
+    @AppStorage("keepAliveAudio") private var keepAliveAudio = true
+    @AppStorage("keepAliveLocation") private var keepAliveLocation = true
+
+    let profileID: String
+    let onChange: () -> Void
+
+    @State private var profile: DeviceProfile
+    @State private var profileEditor: DeviceProfileEditorConfiguration?
+    @State private var isShowingPairingFilePicker = false
+    @State private var showDeleteConfirmation = false
+    @State private var statusMessage: String?
+    @State private var showingError = false
+
+    init(profileID: String, onChange: @escaping () -> Void) {
+        self.profileID = profileID
+        self.onChange = onChange
+        _profile = State(
+            initialValue: DeviceProfileStore.profiles().first(where: { $0.id == profileID })
+                ?? DeviceProfileStore.localProfile
+        )
+    }
+
+    private var isSelected: Bool {
+        DeviceProfileStore.selectedProfileID() == profile.id
+    }
+
+    private var hasPairingFile: Bool {
+        PairingFileStore.hasPairingFile(for: profile.id)
+    }
+
+    private var txmDetected: Bool? {
+        profile.isLocal ? ProcessInfo.processInfo.hasDetectedTXM : profile.txmDetected
+    }
+
+    var body: some View {
+        Form {
+            Section("Profile") {
+                LabeledContent("Name", value: profile.name)
+                LabeledContent("IP Address", value: profile.ipAddress)
+                LabeledContent("Status", value: isSelected ? "Active" : "Inactive")
+
+                if !isSelected {
+                    Button("Use This Device") {
+                        DeviceProfileStore.activate(profile.id)
+                        onChange()
+                    }
+                }
+
+                if !profile.isLocal {
+                    Button("Edit Device") {
+                        profileEditor = DeviceProfileEditorConfiguration(profile: profile)
+                    }
+                }
+            }
+
+            if profile.isLocal {
+                Section("Local Connection") {
+                    Label {
+                        Text("Ensure that LocalDevVPN is connected and that either Wi-Fi is connected or Airplane Mode is enabled.")
+                    } icon: {
+                        Image(systemName: "info.circle")
+                    }
+                }
+            }
+
+            Section("Pairing File") {
+                Label(
+                    hasPairingFile ? "Pairing File Detected" : "Pairing File Missing",
+                    systemImage: hasPairingFile ? "checkmark.circle.fill" : "exclamationmark.triangle.fill"
+                )
+                .foregroundStyle(hasPairingFile ? .green : .orange)
+
+                Button(hasPairingFile ? "Replace Pairing File" : "Add Pairing File") {
+                    isShowingPairingFilePicker = true
+                }
+
+                if profile.isLocal {
+                    Text("The Local profile uses pairingFile.plist in the app's Documents folder.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                if let statusMessage {
+                    Text(statusMessage)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            Section("Scripts") {
+                if let txmDetected {
+                    Label(
+                        txmDetected ? "TXM Detected" : "TXM Not Detected",
+                        systemImage: txmDetected ? "checkmark.circle.fill" : "xmark.circle.fill"
+                    )
+                    .foregroundStyle(txmDetected ? .green : .secondary)
+                } else {
+                    Label("TXM Status Unknown", systemImage: "questionmark.circle.fill")
+                        .foregroundStyle(.secondary)
+                }
+
+                Toggle("Run Scripts", isOn: Binding(
+                    get: { profile.runScripts },
+                    set: { enabled in
+                        profile.runScripts = enabled
+                        DeviceProfileStore.update(profile)
+                        onChange()
+                    }
+                ))
+
+                Text("Controls whether automatic and assigned scripts run for this device.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            if profile.isLocal {
+                Section("Background Keep-Alive") {
+                    Toggle(isOn: $keepAliveAudio) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Silent Audio")
+                            Text("Plays inaudible audio so iOS keeps the app running.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .onChange(of: keepAliveAudio) { _, enabled in
+                        if enabled { BackgroundAudioManager.shared.start() }
+                        else { BackgroundAudioManager.shared.stop() }
+                    }
+
+                    Toggle(isOn: $keepAliveLocation) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Background Location")
+                            Text("Uses low-accuracy location to stay alive when an activity needs it.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .onChange(of: keepAliveLocation) { _, enabled in
+                        if !enabled { BackgroundLocationManager.shared.stop() }
+                    }
+                }
+
+                Section("Behavior") {
+                    Toggle(isOn: $confirmExternalJITRequests) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Confirm JIT Links")
+                            Text("Ask before external links enable JIT or run scripts.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+            }
+
+            if !profile.isLocal {
+                Section {
+                    Button("Delete Device", role: .destructive) {
+                        showDeleteConfirmation = true
+                    }
+                }
+            }
+        }
+        .navigationTitle(profile.name)
+        .navigationBarTitleDisplayMode(.inline)
+        .fileImporter(
+            isPresented: $isShowingPairingFilePicker,
+            allowedContentTypes: PairingFileStore.supportedContentTypes,
+            allowsMultipleSelection: false
+        ) { result in
+            importPairingFile(result)
+        }
+        .sheet(item: $profileEditor) { configuration in
+            DeviceProfileEditorView(profile: configuration.profile, allowsPairingImport: false) { draft in
+                let wasSelected = isSelected
+                profile.name = draft.name
+                profile.ipAddress = draft.ipAddress
+                DeviceProfileStore.update(profile)
+                if wasSelected {
+                    DeviceProfileStore.activate(profile.id)
+                }
+                onChange()
+            }
+        }
+        .confirmationDialog(
+            "Delete \(profile.name)?",
+            isPresented: $showDeleteConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button("Delete Device", role: .destructive) {
+                deleteProfile()
+            }
+            Button("Cancel", role: .cancel) { }
+        } message: {
+            Text("The device profile and its stored pairing file will be removed.")
+        }
+        .alert("Device Profile", isPresented: $showingError) {
+            Button("OK", role: .cancel) { }
+        } message: {
+            Text(statusMessage ?? "The operation failed.")
+        }
+    }
+
+    private func importPairingFile(_ result: Result<[URL], Error>) {
+        do {
+            guard let url = try result.get().first else { return }
+            try PairingFileStore.importFromPicker(url, for: profile.id)
+            statusMessage = "Pairing file imported successfully."
+            if isSelected {
+                DeviceProfileStore.activate(profile.id)
+            }
+            onChange()
+        } catch {
+            statusMessage = "Import failed: \(error.localizedDescription)"
+            showingError = true
+        }
+    }
+
+    private func deleteProfile() {
+        do {
+            let wasSelected = isSelected
+            try PairingFileStore.remove(for: profile.id)
+            DeviceProfileStore.delete(profile.id)
+            if wasSelected {
+                DeviceProfileStore.activate(DeviceProfileStore.localProfileID)
+            }
+            onChange()
+            dismiss()
+        } catch {
+            statusMessage = "Delete failed: \(error.localizedDescription)"
+            showingError = true
+        }
+    }
+}
+
+private struct DeviceProfileEditorView: View {
+    @Environment(\.dismiss) private var dismiss
+
+    let profile: DeviceProfile?
+    let allowsPairingImport: Bool
+    let onSave: (DeviceProfileDraft) async throws -> Void
+
+    @State private var name: String
+    @State private var ipAddress: String
+    @State private var pairingFileData: Data?
+    @State private var pairingFileName: String?
+    @State private var isShowingPairingFilePicker = false
+    @State private var errorMessage: String?
+    @State private var showingError = false
+    @State private var isSaving = false
+
+    init(
+        profile: DeviceProfile?,
+        allowsPairingImport: Bool,
+        onSave: @escaping (DeviceProfileDraft) async throws -> Void
+    ) {
+        self.profile = profile
+        self.allowsPairingImport = allowsPairingImport
+        self.onSave = onSave
+        _name = State(initialValue: profile?.name ?? "")
+        _ipAddress = State(initialValue: profile?.ipAddress ?? "")
+    }
+
+    private var canSave: Bool {
+        !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+        DeviceProfileStore.isValidIPv4Address(ipAddress) &&
+        (!allowsPairingImport || pairingFileData != nil)
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Profile") {
+                    TextField("Device Name", text: $name)
+                        .textInputAutocapitalization(.words)
+
+                    TextField("IP Address", text: $ipAddress)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled(true)
+                        .keyboardType(.numbersAndPunctuation)
+                }
+
+                if allowsPairingImport {
+                    Section("Pairing File") {
+                        Button(pairingFileData == nil ? "Add Pairing File" : "Replace Pairing File") {
+                            isShowingPairingFilePicker = true
+                        }
+                        if let pairingFileName {
+                            Label("\(pairingFileName) selected", systemImage: "doc.badge.checkmark")
+                                .foregroundStyle(.green)
+                        }
+                    }
+                }
+
+                if isSaving {
+                    Section {
+                        HStack(spacing: 10) {
+                            ProgressView()
+                            Text("Connecting and checking TXM capability…")
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+            }
+            .navigationTitle(profile == nil ? "Add Device" : "Edit Device")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                        .disabled(isSaving)
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button(profile == nil ? "Add" : "Save") {
+                        isSaving = true
+                        Task {
+                            do {
+                                try await onSave(DeviceProfileDraft(
+                                    name: name.trimmingCharacters(in: .whitespacesAndNewlines),
+                                    ipAddress: ipAddress.trimmingCharacters(in: .whitespacesAndNewlines),
+                                    pairingFileData: pairingFileData
+                                ))
+                                dismiss()
+                            } catch {
+                                errorMessage = error.localizedDescription
+                                showingError = true
+                                isSaving = false
+                            }
+                        }
+                    }
+                    .disabled(!canSave || isSaving)
+                }
+            }
+        }
+        .fileImporter(
+            isPresented: $isShowingPairingFilePicker,
+            allowedContentTypes: PairingFileStore.supportedContentTypes,
+            allowsMultipleSelection: false
+        ) { result in
+            loadPairingFile(result)
+        }
+        .alert("Pairing File", isPresented: $showingError) {
+            Button("OK", role: .cancel) { }
+        } message: {
+            Text(errorMessage ?? "The pairing file could not be loaded.")
+        }
+    }
+
+    private func loadPairingFile(_ result: Result<[URL], Error>) {
+        do {
+            guard let url = try result.get().first else { return }
+            let accessing = url.startAccessingSecurityScopedResource()
+            defer {
+                if accessing {
+                    url.stopAccessingSecurityScopedResource()
+                }
+            }
+            pairingFileData = try Data(contentsOf: url)
+            pairingFileName = url.lastPathComponent
+        } catch {
+            errorMessage = error.localizedDescription
+            showingError = true
+        }
+    }
+}
+
+private func inspectDevice(
+    profile: DeviceProfile,
+    pairingFileData: Data
+) async throws -> DeviceConnectionInspection {
+    try await withCheckedThrowingContinuation { continuation in
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                continuation.resume(
+                    returning: try JITEnableContext.shared.inspectDevice(
+                        profile: profile,
+                        pairingFileData: pairingFileData
+                    )
+                )
+            } catch {
+                continuation.resume(throwing: error)
             }
         }
     }

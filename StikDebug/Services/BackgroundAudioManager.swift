@@ -41,6 +41,7 @@ final class BackgroundAudioManager {
     }
 
     func requestStart() {
+        guard DeviceProfileStore.selectedProfile().isLocal else { return }
         activityCount += 1
         refreshRunningState()
     }
@@ -50,8 +51,13 @@ final class BackgroundAudioManager {
         refreshRunningState()
     }
 
+    func selectedDeviceDidChange() {
+        refreshRunningState()
+    }
+
     private func refreshRunningState() {
-        let shouldRun = persistentEnabled || (activityCount > 0 && UserDefaults.standard.bool(forKey: "keepAliveAudio"))
+        let shouldRun = DeviceProfileStore.selectedProfile().isLocal &&
+            (persistentEnabled || (activityCount > 0 && UserDefaults.standard.bool(forKey: "keepAliveAudio")))
         guard shouldRun != isRunning else {
             if shouldRun {
                 recoverIfNeeded()
