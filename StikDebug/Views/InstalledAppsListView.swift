@@ -13,6 +13,7 @@ struct InstalledAppsListView: View {
     @Environment(\.dismiss) private var dismiss
 
     let onSelectApp: (String, String) -> Void
+    let onEnableByPID: () -> Void
     let showDoneButton: Bool
 
     private let sharedDefaults = UserDefaults(suiteName: ScriptStore.favoriteAppNamesSuiteName) ?? .standard
@@ -43,9 +44,11 @@ struct InstalledAppsListView: View {
 
     init(
         onSelectApp: @escaping (String, String) -> Void,
+        onEnableByPID: @escaping () -> Void,
         showDoneButton: Bool = true
     ) {
         self.onSelectApp = onSelectApp
+        self.onEnableByPID = onEnableByPID
         self.showDoneButton = showDoneButton
     }
 
@@ -63,6 +66,7 @@ struct InstalledAppsListView: View {
                     prompt: selectedTab.searchPrompt
                 )
                 .toolbar {
+                    leadingToolbarItem
                     tabPickerToolbarItem
                     trailingToolbarItem
                 }
@@ -133,6 +137,16 @@ struct InstalledAppsListView: View {
             }
             .pickerStyle(.segmented)
             .frame(width: 220)
+        }
+    }
+
+    @ToolbarContentBuilder
+    private var leadingToolbarItem: some ToolbarContent {
+        ToolbarItem(placement: .navigationBarLeading) {
+            Button(action: onEnableByPID) {
+                Image(systemName: "number.circle")
+            }
+            .accessibilityLabel("Enable JIT by PID")
         }
     }
 
@@ -564,7 +578,7 @@ private struct EmptyAppListState: View {
 
 struct InstalledAppsListView_Previews: PreviewProvider {
     static var previews: some View {
-        InstalledAppsListView { _, _ in }
+        InstalledAppsListView(onSelectApp: { _, _ in }, onEnableByPID: {})
             .environment(\.colorScheme, .dark)
     }
 }

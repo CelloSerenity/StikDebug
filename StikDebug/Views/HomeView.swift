@@ -19,6 +19,7 @@ struct HomeView: View {
     @State private var debugFeedback: DebugFeedback?
     @State private var pendingExternalURLAction: HomeExternalAction?
     @State private var scriptRunModel: RunJSViewModel?
+    @State private var isShowingPIDJIT = false
 
     private let timer = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
 
@@ -34,6 +35,8 @@ struct HomeView: View {
             bundleID = selectedBundle
             Haptics.medium()
             startJITInBackground(bundleID: selectedBundle, displayName: selectedName)
+        }, onEnableByPID: {
+            isShowingPIDJIT = true
         }, showDoneButton: false)
         .overlay(alignment: .bottom) {
             if let debugFeedback {
@@ -84,6 +87,11 @@ struct HomeView: View {
                     .navigationBarTitleDisplayMode(.inline)
             }
         }
+        .sheet(isPresented: $isShowingPIDJIT) {
+            PIDJITConfigurationView { pid, scriptURL in
+                enableJITByPID(pid, scriptURL: scriptURL)
+            }
+        }
     }
 
     private func handleAppear() {
@@ -116,6 +124,30 @@ struct HomeView: View {
             return
         }
         MountingProgress.shared.checkforMounted()
+    }
+
+    private func enableJITByPID(_ pid: Int, scriptURL: URL?) {
+        var scriptData: Data?
+        if let scriptURL {
+            do {
+                scriptData = try Data(contentsOf: scriptURL)
+            } catch {
+                showAlert(
+                    title: "Unable to Read Script",
+                    message: error.localizedDescription,
+                    showOk: true
+                )
+                return
+            }
+        }
+
+        isShowingPIDJIT = false
+        Haptics.medium()
+        startJITInBackground(
+            pid: pid,
+            scriptData: scriptData,
+            scriptName: scriptURL?.lastPathComponent
+        )
     }
 
     private func queryValue(_ names: [String], in components: URLComponents?) -> String? {
@@ -389,6 +421,84 @@ struct HomeView: View {
         let pad = 4 - (base64.count % 4)
         if pad < 4 { base64 += String(repeating: "=", count: pad) }
         return base64
+    }
+}
+
+private struct PIDJITConfigurationView: View {
+    @Environment(\.dismiss) private var dismiss
+
+    let onEnable: (Int, URL?) -> Void
+
+    @State private var pidText = ""
+    @State private var selectedScriptURL: URL?
+    @State private var isShowingScriptPicker = false
+
+    private var pid: Int? {
+        guard let value = Int(pidText), value > 0, value <= Int(Int32.max) else {
+            return nil
+        }
+        return value
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Process") {
+                    TextField("PID", text: $pidText)
+                        .keyboardType(.numberPad)
+                    Text("Enter the process identifier of a currently running app.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                Section("Script (Optional)") {
+                    LabeledContent(
+                        "Selected Script",
+                        value: selectedScriptURL?.lastPathComponent ?? "None"
+                    )
+
+                    Button(selectedScriptURL == nil ? "Choose Script" : "Change Script") {
+                        isShowingScriptPicker = true
+                    }
+                    .disabled(!ProcessInfo.processInfo.hasTXM)
+
+                    if selectedScriptURL != nil {
+                        Button("Remove Script", role: .destructive) {
+                            selectedScriptURL = nil
+                        }
+                    }
+
+                    if !ProcessInfo.processInfo.hasTXM {
+                        Text("Script execution is disabled for the active device profile.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+            .navigationTitle("Enable JIT by PID")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") {
+                        dismiss()
+                    }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Enable JIT") {
+                        if let pid {
+                            onEnable(pid, selectedScriptURL)
+                        }
+                    }
+                    .disabled(pid == nil)
+                }
+            }
+            .sheet(isPresented: $isShowingScriptPicker) {
+                ScriptListView { scriptURL in
+                    selectedScriptURL = scriptURL
+                    isShowingScriptPicker = false
+                }
+            }
+        }
     }
 }
 
