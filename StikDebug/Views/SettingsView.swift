@@ -570,8 +570,9 @@ private struct DeviceProfileDetailView: View {
             let connected = await DeviceConnectionContext.isReachable(monitoredProfile)
             guard !Task.isCancelled, monitoredProfile == profile else { return }
 
+            let shouldCheckDDI = connected && isConnected != true
             isConnected = connected
-            if DeviceProfileStore.selectedProfileID() == monitoredProfile.id {
+            if shouldCheckDDI, DeviceProfileStore.selectedProfileID() == monitoredProfile.id {
                 mounting.checkforMounted()
             }
 

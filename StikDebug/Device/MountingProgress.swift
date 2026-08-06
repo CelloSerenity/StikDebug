@@ -17,9 +17,16 @@ final class MountingProgress: ObservableObject {
 
     func checkforMounted() {
         DispatchQueue.global(qos: .utility).async {
-            let mounted = isMounted()
+            let status = checkMountStatus()
             DispatchQueue.main.async {
-                self.coolisMounted = mounted
+                switch status {
+                case .mounted:
+                    self.coolisMounted = true
+                case .notMounted:
+                    self.coolisMounted = false
+                case .unreachable:
+                    break
+                }
             }
         }
     }
