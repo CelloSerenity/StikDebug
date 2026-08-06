@@ -24,6 +24,18 @@ final class MountingProgress: ObservableObject {
         }
     }
 
+    func resetMountStatus() {
+        if Thread.isMainThread {
+            coolisMounted = false
+            mountProgress = 0
+        } else {
+            DispatchQueue.main.async {
+                self.coolisMounted = false
+                self.mountProgress = 0
+            }
+        }
+    }
+
     func progressCallback(progress: size_t, total: size_t, context: UnsafeMutableRawPointer?) {
         let percentage = Double(progress) / Double(total) * 100.0
         DispatchQueue.main.async {

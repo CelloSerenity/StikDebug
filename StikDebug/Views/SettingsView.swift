@@ -26,8 +26,6 @@ private struct DeviceProfileDraft {
 
 struct SettingsView: View {
     @State private var activeDeviceName = DeviceProfileStore.selectedProfile().name
-    @State private var activeDeviceID = DeviceProfileStore.selectedProfileID()
-    @State private var activeDeviceIsConnected: Bool?
     @State private var showDDIConfirmation = false
     @State private var isRedownloadingDDI = false
     @State private var ddiDownloadProgress: Double = 0.0
@@ -69,22 +67,6 @@ struct SettingsView: View {
                         DeviceProfilesManagerView()
                     } label: {
                         LabeledContent("Active Device", value: activeDeviceName)
-                    }
-                    if let activeDeviceIsConnected {
-                        Label(
-                            activeDeviceIsConnected ? "Connected" : "Disconnected",
-                            systemImage: activeDeviceIsConnected
-                                ? "checkmark.circle.fill"
-                                : "xmark.circle.fill"
-                        )
-                        .foregroundStyle(activeDeviceIsConnected ? .green : .red)
-                    } else {
-                        HStack(spacing: 10) {
-                            ProgressView()
-                                .controlSize(.small)
-                            Text("Checking Connection")
-                                .foregroundStyle(.secondary)
-                        }
                     }
                 }
 
@@ -131,9 +113,6 @@ struct SettingsView: View {
             .onReceive(NotificationCenter.default.publisher(for: .pairingFileImported)) { _ in
                 refreshActiveDevice()
             }
-            .task(id: activeDeviceID) {
-                await monitorActiveDeviceConnection()
-            }
         }
         .confirmationDialog("Redownload DDI Files?", isPresented: $showDDIConfirmation, titleVisibility: .visible) {
             Button("Redownload", role: .destructive) {
@@ -153,27 +132,7 @@ struct SettingsView: View {
     }
 
     private func refreshActiveDevice() {
-        let selectedProfileID = DeviceProfileStore.selectedProfileID()
-        if activeDeviceID != selectedProfileID {
-            activeDeviceIsConnected = nil
-        }
         activeDeviceName = DeviceProfileStore.selectedProfile().name
-        activeDeviceID = selectedProfileID
-    }
-
-    private func monitorActiveDeviceConnection() async {
-        while !Task.isCancelled {
-            let profile = DeviceProfileStore.selectedProfile()
-            let profileID = profile.id
-            let isConnected = await DeviceConnectionContext.isReachable(profile)
-            guard !Task.isCancelled, profileID == DeviceProfileStore.selectedProfileID() else { return }
-            activeDeviceIsConnected = isConnected
-            do {
-                try await Task.sleep(nanoseconds: 3_000_000_000)
-            } catch {
-                return
-            }
-        }
     }
 
     // MARK: - Business Logic
@@ -319,6 +278,7 @@ private struct DeviceProfilesManagerView: View {
 
 private struct DeviceProfileDetailView: View {
     @Environment(\.dismiss) private var dismiss
+    @ObservedObject private var mounting = MountingProgress.shared
 
     @AppStorage(UserDefaults.Keys.confirmExternalJITRequests) private var confirmExternalJITRequests = true
     @AppStorage("keepAliveAudio") private var keepAliveAudio = true
@@ -333,6 +293,7 @@ private struct DeviceProfileDetailView: View {
     @State private var showDeleteConfirmation = false
     @State private var statusMessage: String?
     @State private var showingError = false
+    @State private var isConnected: Bool?
 
     init(profileID: String, onChange: @escaping () -> Void) {
         self.profileID = profileID
@@ -355,6 +316,14 @@ private struct DeviceProfileDetailView: View {
         profile.isLocal ? ProcessInfo.processInfo.hasDetectedTXM : profile.txmDetected
     }
 
+    private var isDDIMounted: Bool {
+        isSelected && mounting.coolisMounted
+    }
+
+    private var isMountingDDI: Bool {
+        isSelected && mounting.mountingThread != nil
+    }
+
     var body: some View {
         Form {
             Section("Profile") {
@@ -374,6 +343,45 @@ private struct DeviceProfileDetailView: View {
                         profileEditor = DeviceProfileEditorConfiguration(profile: profile)
                     }
                 }
+            }
+
+            Section("Connection") {
+                LabeledContent("Connection Status") {
+                    if let isConnected {
+                        Label(
+                            isConnected ? "Connected" : "Disconnected",
+                            systemImage: isConnected ? "checkmark.circle.fill" : "xmark.circle.fill"
+                        )
+                        .foregroundStyle(isConnected ? .green : .red)
+                    } else {
+                        HStack(spacing: 8) {
+                            ProgressView()
+                                .controlSize(.small)
+                            Text("Checking")
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+
+                Button(action: mountDDI) {
+                    HStack {
+                        Text("DDI Status")
+                        Spacer()
+                        if isMountingDDI {
+                            ProgressView()
+                                .controlSize(.small)
+                            Text("Mounting")
+                                .foregroundStyle(.secondary)
+                        } else {
+                            Label(
+                                ddiStatusText,
+                                systemImage: isDDIMounted ? "checkmark.circle.fill" : "xmark.circle.fill"
+                            )
+                            .foregroundStyle(isDDIMounted ? .green : .secondary)
+                        }
+                    }
+                }
+                .disabled(isDDIMounted || mounting.mountingThread != nil)
             }
 
             if profile.isLocal {
@@ -410,7 +418,7 @@ private struct DeviceProfileDetailView: View {
                 }
             }
 
-            Section("Scripts") {
+            Section(profile.isLocal ? "Scripts & Behavior" : "Scripts") {
                 if let txmDetected {
                     Label(
                         txmDetected ? "TXM Detected" : "TXM Not Detected",
@@ -434,6 +442,17 @@ private struct DeviceProfileDetailView: View {
                 Text("Controls whether automatic and assigned scripts run for this device.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+
+                if profile.isLocal {
+                    Toggle(isOn: $confirmExternalJITRequests) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Confirm JIT Links")
+                            Text("Ask before external links enable JIT or run scripts.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
             }
 
             if profile.isLocal {
@@ -463,17 +482,6 @@ private struct DeviceProfileDetailView: View {
                         if !enabled { BackgroundLocationManager.shared.stop() }
                     }
                 }
-
-                Section("Behavior") {
-                    Toggle(isOn: $confirmExternalJITRequests) {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("Confirm JIT Links")
-                            Text("Ask before external links enable JIT or run scripts.")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                }
             }
 
             if !profile.isLocal {
@@ -486,6 +494,9 @@ private struct DeviceProfileDetailView: View {
         }
         .navigationTitle(profile.name)
         .navigationBarTitleDisplayMode(.inline)
+        .task(id: "\(profile.id)-\(profile.ipAddress)") {
+            await monitorDeviceStatus()
+        }
         .fileImporter(
             isPresented: $isShowingPairingFilePicker,
             allowedContentTypes: PairingFileStore.supportedContentTypes,
@@ -537,6 +548,43 @@ private struct DeviceProfileDetailView: View {
             statusMessage = "Import failed: \(error.localizedDescription)"
             showingError = true
         }
+    }
+
+    private var ddiStatusText: String {
+        if !isSelected {
+            return "Inactive"
+        }
+        return isDDIMounted ? "Mounted" : "Not Mounted"
+    }
+
+    private func monitorDeviceStatus() async {
+        while !Task.isCancelled {
+            let monitoredProfile = profile
+            let connected = await DeviceConnectionContext.isReachable(monitoredProfile)
+            guard !Task.isCancelled, monitoredProfile == profile else { return }
+
+            isConnected = connected
+            if DeviceProfileStore.selectedProfileID() == monitoredProfile.id {
+                mounting.checkforMounted()
+            }
+
+            do {
+                try await Task.sleep(nanoseconds: 3_000_000_000)
+            } catch {
+                return
+            }
+        }
+    }
+
+    private func mountDDI() {
+        guard !isDDIMounted, mounting.mountingThread == nil else { return }
+
+        if !isSelected {
+            DeviceProfileStore.activate(profile.id)
+            isConnected = nil
+            onChange()
+        }
+        mounting.pubMount()
     }
 
     private func deleteProfile() {

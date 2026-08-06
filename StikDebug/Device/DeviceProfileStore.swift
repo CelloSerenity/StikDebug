@@ -160,6 +160,7 @@ enum DeviceProfileStore {
         LocationSimulationCommandQueue.shared.async {
             reset_location_simulation()
         }
+        MountingProgress.shared.resetMountStatus()
         TunnelManager.shared.selectedDeviceDidChange()
         BackgroundAudioManager.shared.selectedDeviceDidChange()
         BackgroundLocationManager.shared.selectedDeviceDidChange()
