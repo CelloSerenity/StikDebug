@@ -49,6 +49,7 @@ final class InstalledAppsViewModel: ObservableObject {
                         nonDebuggable: classifiedApps.nonDebuggable,
                         system: classifiedApps.system
                     )
+                    self.lastError = nil
                     self.isLoading = false
                     self.cacheApps(
                         debuggable: debuggable,

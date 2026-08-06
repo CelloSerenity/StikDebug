@@ -320,10 +320,6 @@ private struct DeviceProfileDetailView: View {
         isSelected && mounting.coolisMounted
     }
 
-    private var isMountingDDI: Bool {
-        isSelected && mounting.mountingThread != nil
-    }
-
     var body: some View {
         Form {
             Section("Profile") {
@@ -345,43 +341,8 @@ private struct DeviceProfileDetailView: View {
                 }
             }
 
-            Section("Connection") {
-                LabeledContent("Connection Status") {
-                    if let isConnected {
-                        Label(
-                            isConnected ? "Connected" : "Disconnected",
-                            systemImage: isConnected ? "checkmark.circle.fill" : "xmark.circle.fill"
-                        )
-                        .foregroundStyle(isConnected ? .green : .red)
-                    } else {
-                        HStack(spacing: 8) {
-                            ProgressView()
-                                .controlSize(.small)
-                            Text("Checking")
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                }
-
-                Button(action: mountDDI) {
-                    HStack {
-                        Text("DDI Status")
-                        Spacer()
-                        if isMountingDDI {
-                            ProgressView()
-                                .controlSize(.small)
-                            Text("Mounting")
-                                .foregroundStyle(.secondary)
-                        } else {
-                            Label(
-                                ddiStatusText,
-                                systemImage: isDDIMounted ? "checkmark.circle.fill" : "xmark.circle.fill"
-                            )
-                            .foregroundStyle(isDDIMounted ? .green : .secondary)
-                        }
-                    }
-                }
-                .disabled(isDDIMounted || mounting.mountingThread != nil)
+            Section {
+                deviceStatusRow
             }
 
             if profile.isLocal {
@@ -430,18 +391,21 @@ private struct DeviceProfileDetailView: View {
                         .foregroundStyle(.secondary)
                 }
 
-                Toggle("Run Scripts", isOn: Binding(
+                Toggle(isOn: Binding(
                     get: { profile.runScripts },
                     set: { enabled in
                         profile.runScripts = enabled
                         DeviceProfileStore.update(profile)
                         onChange()
                     }
-                ))
-
-                Text("Controls whether automatic and assigned scripts run for this device.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                )) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Run Scripts")
+                        Text("Controls whether automatic and assigned scripts run for this device.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
 
                 if profile.isLocal {
                     Toggle(isOn: $confirmExternalJITRequests) {
@@ -550,11 +514,54 @@ private struct DeviceProfileDetailView: View {
         }
     }
 
-    private var ddiStatusText: String {
-        if !isSelected {
-            return "Inactive"
+    @ViewBuilder
+    private var deviceStatusRow: some View {
+        if canMountDDI {
+            Button(action: mountDDI) {
+                deviceStatusContent
+            }
+            .buttonStyle(.plain)
+        } else {
+            deviceStatusContent
         }
-        return isDDIMounted ? "Mounted" : "Not Mounted"
+    }
+
+    private var deviceStatusContent: some View {
+        HStack {
+            Text("Device Status")
+                .foregroundStyle(.primary)
+            Spacer()
+            HStack(spacing: 4) {
+                if isConnected == nil {
+                    ProgressView()
+                        .controlSize(.small)
+                } else {
+                    Image(systemName: deviceStatusSymbol)
+                }
+                Text(deviceStatusText)
+            }
+            .foregroundStyle(deviceStatusColor)
+        }
+    }
+
+    private var deviceStatusText: String {
+        guard isConnected == true else { return "Disconnected" }
+        return isDDIMounted ? "Ready" : "DDI Unmounted"
+    }
+
+    private var deviceStatusSymbol: String {
+        isDDIMounted ? "checkmark.circle.fill" : "xmark.circle.fill"
+    }
+
+    private var deviceStatusColor: Color {
+        guard isConnected == true else {
+            return isConnected == nil ? .secondary : .red
+        }
+        return isDDIMounted ? .green : .orange
+    }
+
+    private var canMountDDI: Bool {
+        isConnected == true && !isDDIMounted && mounting.mountingThread == nil
     }
 
     private func monitorDeviceStatus() async {
@@ -577,7 +584,7 @@ private struct DeviceProfileDetailView: View {
     }
 
     private func mountDDI() {
-        guard !isDDIMounted, mounting.mountingThread == nil else { return }
+        guard canMountDDI else { return }
 
         if !isSelected {
             DeviceProfileStore.activate(profile.id)
