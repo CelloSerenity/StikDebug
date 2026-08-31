@@ -129,6 +129,7 @@ struct HomeView: View {
         case .success(let url):
             do {
                 try PairingFileStore.importFromPicker(url)
+                JITEnableContext.shared.invalidateTunnel()
                 markTunnelDisconnected()
                 startTunnelInBackground()
                 NotificationCenter.default.post(name: .pairingFileImported, object: nil)

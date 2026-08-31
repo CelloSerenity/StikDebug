@@ -157,10 +157,10 @@ private func tunnelConnectionAlertMessage(for error: NSError) -> String {
     } else if error.code == 54 || lowercasedMessage.contains("connection reset") {
         likelyCause = "The device or VPN closed the tunnel connection before setup finished."
         recoverySteps = [
-            "Open LocalDevVPN and confirm the VPN is connected.",
-            "Make sure LocalDevVPN is using the default \(DeviceConnectionContext.defaultTargetIPAddress) address.",
-            "Reconnect Wi-Fi and LocalDevVPN, then try again.",
-            "If this keeps happening, select a fresh pairing file."
+            "Wait a few seconds, unlock the device, and try again. StikDebug automatically retries this once.",
+            "Close any other app using a JIT, debug, or CoreDevice tunnel to this device.",
+            "Open LocalDevVPN and confirm it is connected at \(DeviceConnectionContext.defaultTargetIPAddress), then reconnect it once if needed.",
+            "Only replace the pairing file if you also see a pair-verify or invalid-pairing error."
         ]
     } else if error.code == -18 || lowercasedMessage.contains("parse target ip") {
         likelyCause = "The configured target IP address is not valid."

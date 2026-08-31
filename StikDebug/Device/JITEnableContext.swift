@@ -181,6 +181,25 @@ final class JITEnableContext {
         return tunnel
     }
 
+    private func shouldRetryTunnelCreation(after error: NSError) -> Bool {
+        let message = error.localizedDescription.lowercased()
+        return error.code == 54 || message.contains("connection reset") || message.contains("broken pipe")
+    }
+
+    private func createTunnelWithTransientRetry(hostname: String) throws -> TunnelHandles {
+        do {
+            return try createTunnel(hostname: hostname)
+        } catch let error as NSError {
+            guard shouldRetryTunnelCreation(after: error) else {
+                throw error
+            }
+
+            LogManager.shared.addWarningLog("Tunnel setup was reset by the peer; retrying once")
+            usleep(750_000)
+            return try createTunnel(hostname: hostname)
+        }
+    }
+
     func startTunnel() throws {
         tunnelLock.lock()
         if tunnelConnecting {
@@ -197,6 +216,11 @@ final class JITEnableContext {
             if let lastTunnelError {
                 throw lastTunnelError
             }
+            return
+        }
+
+        if adapter != nil, handshake != nil {
+            tunnelLock.unlock()
             return
         }
 
@@ -219,7 +243,7 @@ final class JITEnableContext {
         }
 
         do {
-            let newTunnel = try createTunnel(hostname: "StikDebug")
+            let newTunnel = try createTunnelWithTransientRetry(hostname: "StikDebug")
             newAdapter = newTunnel.adapter
             newHandshake = newTunnel.handshake
         } catch let tunnelError as NSError {
@@ -239,9 +263,26 @@ final class JITEnableContext {
     }
 
     func ensureTunnel() throws {
-        if adapter == nil || handshake == nil {
-            try startTunnel()
+        try startTunnel()
+    }
+
+    func invalidateTunnel() {
+        tunnelLock.lock()
+        defer { tunnelLock.unlock() }
+
+        guard !tunnelConnecting else {
+            return
         }
+
+        if let handshake {
+            rsd_handshake_free(handshake)
+            self.handshake = nil
+        }
+        if let adapter {
+            adapter_free(adapter)
+            self.adapter = nil
+        }
+        lastTunnelError = nil
     }
 
     private func withFreshDebugTunnel<T>(
