@@ -14,6 +14,7 @@ private enum SettingsLinks {
 }
 
 struct SettingsView: View {
+    @StateObject private var onDevicePairing = OnDevicePairingService.shared
     @AppStorage(UserDefaults.Keys.txmOverride) private var overrideTXMDetection = false
     @AppStorage(UserDefaults.Keys.confirmExternalJITRequests) private var confirmExternalJITRequests = true
     @AppStorage("keepAliveAudio") private var keepAliveAudio = true
@@ -22,6 +23,7 @@ struct SettingsView: View {
     @AppStorage(UserDefaults.Keys.mallocDebug) private var mallocDebug = false
 
     @State private var isShowingPairingFilePicker = false
+    @State private var isShowingOnDevicePairing = false
     @State private var isImportingFile = false
     @State private var pairingImportMessage: (text: String, isError: Bool)?
     @State private var showDDIConfirmation = false
@@ -61,6 +63,12 @@ struct SettingsView: View {
                 }
 
                 Section("Pairing File") {
+                    Button {
+                        isShowingOnDevicePairing = true
+                    } label: {
+                        Label("Pair a Device", systemImage: "iphone.and.arrow.forward")
+                    }
+
                     Button {
                         isShowingPairingFilePicker = true
                     } label: {
@@ -220,6 +228,11 @@ struct SettingsView: View {
                 pairingImportMessage = ("Import failed: \(error.localizedDescription)", true)
                 schedulePairingStatusDismiss()
             }
+        }
+        .sheet(isPresented: $isShowingOnDevicePairing, onDismiss: {
+            onDevicePairing.cancel()
+        }) {
+            OnDevicePairingView(service: onDevicePairing)
         }
         .confirmationDialog("Redownload DDI Files?", isPresented: $showDDIConfirmation, titleVisibility: .visible) {
             Button("Redownload", role: .destructive) {
