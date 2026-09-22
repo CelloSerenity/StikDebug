@@ -9,7 +9,6 @@ import idevice
 final class MountingProgress: ObservableObject {
     static let shared = MountingProgress()
 
-    @Published private(set) var mountProgress: Double = 0.0
     @Published private(set) var mountingThread: Thread?
     @Published private(set) var coolisMounted: Bool = false
 
@@ -42,13 +41,6 @@ final class MountingProgress: ObservableObject {
         }
     }
 
-    func progressCallback(progress: size_t, total: size_t, context: UnsafeMutableRawPointer?) {
-        let percentage = Double(progress) / Double(total) * 100.0
-        DispatchQueue.main.async {
-            self.mountProgress = percentage
-        }
-    }
-
     func pubMount() {
         guard TunnelManager.shared.isConnected else { return }
 
@@ -74,10 +66,8 @@ final class MountingProgress: ObservableObject {
 
         let thread = Thread { [weak self] in
             guard let self else { return }
-            let mountError = mountPersonalDDI(
-                imagePath: URL.documentsDirectory.appendingPathComponent("DDI/Image.dmg").path,
-                trustcachePath: URL.documentsDirectory.appendingPathComponent("DDI/Image.dmg.trustcache").path,
-                manifestPath: URL.documentsDirectory.appendingPathComponent("DDI/BuildManifest.plist").path
+            let mountError = installCryptexDDI(
+                from: URL.documentsDirectory.appendingPathComponent("DDI_Cryptex").path
             )
 
             DispatchQueue.main.async {

@@ -13,10 +13,6 @@ typealias RsdHandshakeHandle = OpaquePointer
 typealias ImageMounterHandle = OpaquePointer
 typealias LockdowndClientHandle = OpaquePointer
 
-func progressCallback(progress: size_t, total: size_t, context: UnsafeMutableRawPointer?) {
-    MountingProgress.shared.progressCallback(progress: progress, total: total, context: context)
-}
-
 enum MountCheckResult {
     case mounted
     case notMounted
@@ -29,18 +25,17 @@ func isMounted() -> Bool {
 
 func checkMountStatus() -> MountCheckResult {
     do {
-        let result = try JITEnableContext.shared.getMountedDeviceCount()
-        return result > 0 ? .mounted : .notMounted
+        return try JITEnableContext.shared.isCryptexDDIInstalled() ? .mounted : .notMounted
     } catch {
         return .unreachable
     }
 }
 
-func mountPersonalDDI(imagePath: String, trustcachePath: String, manifestPath: String) -> String? {
+func installCryptexDDI(from directoryPath: String) -> String? {
     do {
-        try JITEnableContext.shared.mountPersonalDDI(withImagePath: imagePath, trustcachePath: trustcachePath, manifestPath: manifestPath)
+        try JITEnableContext.shared.installCryptexDDI(from: directoryPath)
     } catch {
-        LogManager.shared.addErrorLog("Failed to mount DDI: \(error.localizedDescription)")
+        LogManager.shared.addErrorLog("Failed to install DDI cryptex: \(error.localizedDescription)")
         return error.localizedDescription
     }
     return nil

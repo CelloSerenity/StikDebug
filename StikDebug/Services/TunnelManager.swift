@@ -70,8 +70,8 @@ final class TunnelManager: ObservableObject {
     }
 
     private func mountDeveloperDiskImageIfNeeded() {
-        let trustcachePath = URL.documentsDirectory.appendingPathComponent("DDI/Image.dmg.trustcache").path
-        guard FileManager.default.fileExists(atPath: trustcachePath),
+        let manifestPath = URL.documentsDirectory.appendingPathComponent("DDI_Cryptex/BuildManifest.plist").path
+        guard FileManager.default.fileExists(atPath: manifestPath),
               !MountingProgress.shared.coolisMounted,
               MountingProgress.shared.mountingThread == nil else {
             return

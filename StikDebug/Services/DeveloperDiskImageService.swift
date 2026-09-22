@@ -80,18 +80,28 @@ final class DeveloperDiskImageService {
     private static let downloadItems: [DDIDownloadItem] = [
         .init(
             name: "Build Manifest",
-            relativePath: "DDI/BuildManifest.plist",
-            urlString: "https://github.com/doronz88/DeveloperDiskImage/raw/refs/heads/main/PersonalizedImages/Xcode_iOS_DDI_Personalized/BuildManifest.plist"
+            relativePath: "DDI_Cryptex/BuildManifest.plist",
+            urlString: "https://github.com/doronz88/DeveloperDiskImage/raw/refs/heads/main/PersonalizedImages/Xcode_iOS_DDI_Cryptex/BuildManifest.plist"
         ),
         .init(
             name: "Image",
-            relativePath: "DDI/Image.dmg",
-            urlString: "https://github.com/doronz88/DeveloperDiskImage/raw/refs/heads/main/PersonalizedImages/Xcode_iOS_DDI_Personalized/Image.dmg"
+            relativePath: "DDI_Cryptex/Image.dmg",
+            urlString: "https://github.com/doronz88/DeveloperDiskImage/raw/refs/heads/main/PersonalizedImages/Xcode_iOS_DDI_Cryptex/Image.dmg"
         ),
         .init(
             name: "TrustCache",
-            relativePath: "DDI/Image.dmg.trustcache",
-            urlString: "https://github.com/doronz88/DeveloperDiskImage/raw/refs/heads/main/PersonalizedImages/Xcode_iOS_DDI_Personalized/Image.dmg.trustcache"
+            relativePath: "DDI_Cryptex/Image.dmg.trustcache",
+            urlString: "https://github.com/doronz88/DeveloperDiskImage/raw/refs/heads/main/PersonalizedImages/Xcode_iOS_DDI_Cryptex/Image.dmg.trustcache"
+        ),
+        .init(
+            name: "Cryptex Info",
+            relativePath: "DDI_Cryptex/Image.dmg.cryptex_info",
+            urlString: "https://github.com/doronz88/DeveloperDiskImage/raw/refs/heads/main/PersonalizedImages/Xcode_iOS_DDI_Cryptex/Image.dmg.cryptex_info"
+        ),
+        .init(
+            name: "Root Hash",
+            relativePath: "DDI_Cryptex/Image.dmg.root_hash",
+            urlString: "https://github.com/doronz88/DeveloperDiskImage/raw/refs/heads/main/PersonalizedImages/Xcode_iOS_DDI_Cryptex/Image.dmg.root_hash"
         )
     ]
 }
