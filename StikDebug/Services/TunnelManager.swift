@@ -70,12 +70,7 @@ final class TunnelManager: ObservableObject {
     }
 
     private func mountDeveloperDiskImageIfNeeded() {
-        let manifestPath = URL.documentsDirectory.appendingPathComponent("DDI_Cryptex/BuildManifest.plist").path
-        guard FileManager.default.fileExists(atPath: manifestPath),
-              !MountingProgress.shared.coolisMounted,
-              MountingProgress.shared.mountingThread == nil else {
-            return
-        }
+        guard DeveloperDiskImageService.filesAreReady else { return }
         MountingProgress.shared.pubMount()
     }
 

@@ -7,6 +7,13 @@ import Foundation
 
 final class DeveloperDiskImageService {
     static let shared = DeveloperDiskImageService()
+    static let directoryURL = URL.documentsDirectory.appendingPathComponent("DDI", isDirectory: true)
+
+    static var filesAreReady: Bool {
+        downloadItems.allSatisfy {
+            FileManager.default.fileExists(atPath: directoryURL.appendingPathComponent($0.fileName).path)
+        }
+    }
 
     private let fileManager: FileManager
     private let session: URLSession
@@ -17,9 +24,16 @@ final class DeveloperDiskImageService {
     }
 
     func downloadMissingFiles() async throws {
+        let hasCryptexMarker = ["Image.dmg.cryptex_info", "Image.dmg.root_hash"].contains {
+            fileManager.fileExists(atPath: Self.directoryURL.appendingPathComponent($0).path)
+        }
+        let replaceLegacyFiles = !hasCryptexMarker && Self.downloadItems.contains {
+            fileManager.fileExists(atPath: Self.directoryURL.appendingPathComponent($0.fileName).path)
+        }
+
         for item in Self.downloadItems {
-            let destinationURL = URL.documentsDirectory.appendingPathComponent(item.relativePath)
-            guard !fileManager.fileExists(atPath: destinationURL.path) else {
+            let destinationURL = Self.directoryURL.appendingPathComponent(item.fileName)
+            guard replaceLegacyFiles || !fileManager.fileExists(atPath: destinationURL.path) else {
                 continue
             }
             try await downloadFile(from: item.urlString, to: destinationURL)
@@ -56,8 +70,12 @@ final class DeveloperDiskImageService {
         var completedStages = 0.0
 
         progressHandler?(0.0, "Removing existing DDI files...")
+        let completionMarker = Self.directoryURL.appendingPathComponent("Image.dmg.root_hash")
+        if fileManager.fileExists(atPath: completionMarker.path) {
+            try fileManager.removeItem(at: completionMarker)
+        }
         for item in Self.downloadItems {
-            let fileURL = URL.documentsDirectory.appendingPathComponent(item.relativePath)
+            let fileURL = Self.directoryURL.appendingPathComponent(item.fileName)
             if fileManager.fileExists(atPath: fileURL.path) {
                 try fileManager.removeItem(at: fileURL)
             }
@@ -68,7 +86,7 @@ final class DeveloperDiskImageService {
 
         for item in Self.downloadItems {
             progressHandler?(completedStages / totalStages, "Downloading \(item.name)...")
-            let destinationURL = URL.documentsDirectory.appendingPathComponent(item.relativePath)
+            let destinationURL = Self.directoryURL.appendingPathComponent(item.fileName)
             try await downloadFile(from: item.urlString, to: destinationURL)
             completedStages += 1.0
             progressHandler?(completedStages / totalStages, "\(item.name) ready")
@@ -80,27 +98,27 @@ final class DeveloperDiskImageService {
     private static let downloadItems: [DDIDownloadItem] = [
         .init(
             name: "Build Manifest",
-            relativePath: "DDI_Cryptex/BuildManifest.plist",
+            fileName: "BuildManifest.plist",
             urlString: "https://github.com/doronz88/DeveloperDiskImage/raw/refs/heads/main/PersonalizedImages/Xcode_iOS_DDI_Cryptex/BuildManifest.plist"
         ),
         .init(
             name: "Image",
-            relativePath: "DDI_Cryptex/Image.dmg",
+            fileName: "Image.dmg",
             urlString: "https://github.com/doronz88/DeveloperDiskImage/raw/refs/heads/main/PersonalizedImages/Xcode_iOS_DDI_Cryptex/Image.dmg"
         ),
         .init(
             name: "TrustCache",
-            relativePath: "DDI_Cryptex/Image.dmg.trustcache",
+            fileName: "Image.dmg.trustcache",
             urlString: "https://github.com/doronz88/DeveloperDiskImage/raw/refs/heads/main/PersonalizedImages/Xcode_iOS_DDI_Cryptex/Image.dmg.trustcache"
         ),
         .init(
             name: "Cryptex Info",
-            relativePath: "DDI_Cryptex/Image.dmg.cryptex_info",
+            fileName: "Image.dmg.cryptex_info",
             urlString: "https://github.com/doronz88/DeveloperDiskImage/raw/refs/heads/main/PersonalizedImages/Xcode_iOS_DDI_Cryptex/Image.dmg.cryptex_info"
         ),
         .init(
             name: "Root Hash",
-            relativePath: "DDI_Cryptex/Image.dmg.root_hash",
+            fileName: "Image.dmg.root_hash",
             urlString: "https://github.com/doronz88/DeveloperDiskImage/raw/refs/heads/main/PersonalizedImages/Xcode_iOS_DDI_Cryptex/Image.dmg.root_hash"
         )
     ]
@@ -108,7 +126,7 @@ final class DeveloperDiskImageService {
 
 private struct DDIDownloadItem {
     let name: String
-    let relativePath: String
+    let fileName: String
     let urlString: String
 }
 

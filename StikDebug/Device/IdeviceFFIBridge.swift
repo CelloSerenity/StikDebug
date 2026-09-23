@@ -233,15 +233,47 @@ private enum IdeviceBridge {
 }
 
 extension JITEnableContext {
-    func isCryptexDDIInstalled() throws -> Bool {
+    func isDeveloperDiskImageMounted() throws -> Bool {
         try IdeviceBridge.withTunnelHandles(for: self) { adapter, handshake in
             var installed: UnsafeMutablePointer<InstalledCryptexC>?
-            if let ffiError = cryptexd_installed_ddi(adapter, handshake, &installed) {
-                throw IdeviceBridge.consumeFFIError(ffiError, fallback: "Failed to query installed DDI cryptex")
+            let ffiError = cryptexd_installed_ddi(adapter, handshake, &installed)
+            let queryError = ffiError.map {
+                IdeviceBridge.consumeFFIError($0, fallback: "Failed to query installed DDI cryptex")
+            }
+            defer { cryptexd_free_installed_cryptex(installed) }
+            if installed != nil {
+                return true
             }
 
-            defer { cryptexd_free_installed_cryptex(installed) }
-            return installed != nil
+            let legacyMounted = (try? IdeviceBridge.withConnectedClient(
+                fallback: "Failed to connect to image mounter",
+                missingClientMessage: "Image mounter client was not created",
+                connect: { image_mounter_connect_rsd(adapter, handshake, $0) },
+                cleanup: { image_mounter_free($0) }
+            ) { client in
+                var devices: UnsafeMutablePointer<plist_t?>?
+                var deviceCount = 0
+                if let error = image_mounter_copy_devices(client, &devices, &deviceCount) {
+                    throw IdeviceBridge.consumeFFIError(error, fallback: "Failed to fetch mounted devices")
+                }
+                if let devices {
+                    for index in 0..<deviceCount {
+                        plist_free(devices[index])
+                    }
+                    idevice_data_free(
+                        UnsafeMutableRawPointer(devices).assumingMemoryBound(to: UInt8.self),
+                        UInt(deviceCount * MemoryLayout<plist_t?>.stride)
+                    )
+                }
+                return deviceCount > 0
+            }) ?? false
+            if legacyMounted {
+                return true
+            }
+            if let queryError {
+                throw queryError
+            }
+            return false
         }
     }
 

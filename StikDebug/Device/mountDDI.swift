@@ -25,17 +25,16 @@ func isMounted() -> Bool {
 
 func checkMountStatus() -> MountCheckResult {
     do {
-        return try JITEnableContext.shared.isCryptexDDIInstalled() ? .mounted : .notMounted
+        return try JITEnableContext.shared.isDeveloperDiskImageMounted() ? .mounted : .notMounted
     } catch {
         return .unreachable
     }
 }
 
-func installCryptexDDI(from directoryPath: String) -> String? {
+func mountDeveloperDiskImage(from directoryPath: String) -> String? {
     do {
         try JITEnableContext.shared.installCryptexDDI(from: directoryPath)
     } catch {
-        LogManager.shared.addErrorLog("Failed to install DDI cryptex: \(error.localizedDescription)")
         return error.localizedDescription
     }
     return nil
