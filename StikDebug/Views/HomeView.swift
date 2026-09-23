@@ -19,6 +19,7 @@ struct HomeView: View {
     @State private var isShowingPairingFilePicker = false
     @State private var debugFeedback: DebugFeedback?
     @State private var pendingExternalURLAction: HomeExternalAction?
+    @State private var pendingLiveContainerApp: LiveContainerApp?
     @State private var scriptRunModel: RunJSViewModel?
 
     private let timer = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
@@ -30,11 +31,18 @@ struct HomeView: View {
         let isWorking: Bool
     }
 
+    private struct LiveContainerApp {
+        let bundleID: String
+        let name: String
+    }
+
     var body: some View {
         InstalledAppsListView(onSelectApp: { selectedBundle, selectedName in
-            bundleID = selectedBundle
-            Haptics.medium()
-            startJITInBackground(bundleID: selectedBundle, displayName: selectedName)
+            if selectedName.localizedCaseInsensitiveContains("LiveContainer") {
+                pendingLiveContainerApp = LiveContainerApp(bundleID: selectedBundle, name: selectedName)
+            } else {
+                enableJITForSelectedApp(bundleID: selectedBundle, name: selectedName)
+            }
         }, showDoneButton: false, onImportPairingFile: { isShowingPairingFilePicker = true })
         .overlay(alignment: .bottom) {
             if let debugFeedback {
@@ -74,6 +82,28 @@ struct HomeView: View {
         } message: { action in
             Text(action.message)
         }
+        .alert(
+            "Enable JIT for LiveContainer?",
+            isPresented: Binding(
+                get: { pendingLiveContainerApp != nil },
+                set: { isPresented in
+                    if !isPresented {
+                        pendingLiveContainerApp = nil
+                    }
+                }
+            ),
+            presenting: pendingLiveContainerApp
+        ) { app in
+            Button("Cancel", role: .cancel) {
+                pendingLiveContainerApp = nil
+            }
+            Button("Proceed") {
+                pendingLiveContainerApp = nil
+                enableJITForSelectedApp(bundleID: app.bundleID, name: app.name)
+            }
+        } message: { _ in
+            Text("StikDebug isn't meant to enable JIT for LiveContainer manually. Select StikDebug in LiveContainer settings, enable \"Run with JIT\" for your app, then open your app normally. It will automatically jump back here.")
+        }
         .fileImporter(
             isPresented: $isShowingPairingFilePicker,
             allowedContentTypes: PairingFileStore.supportedContentTypes,
@@ -90,6 +120,12 @@ struct HomeView: View {
                     .navigationBarTitleDisplayMode(.inline)
             }
         }
+    }
+
+    private func enableJITForSelectedApp(bundleID selectedBundle: String, name: String) {
+        bundleID = selectedBundle
+        Haptics.medium()
+        startJITInBackground(bundleID: selectedBundle, displayName: name)
     }
 
     private func handleAppear() {
