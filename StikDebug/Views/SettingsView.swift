@@ -217,10 +217,12 @@ struct SettingsView: View {
             targetDeviceIPInput = targetDeviceIP
             remotePairingPortInput = remotePairingPortOverride
         }
-        .task {
+        .task(id: targetDeviceIP) {
+            automaticPortPlaceholder = "Discovering…"
             let result = await Task.detached {
                 RemotePairingPortResolver.discover()
             }.value
+            guard !Task.isCancelled else { return }
             automaticPortPlaceholder = result.source == "Bonjour"
                 ? "Bonjour (\(result.port))"
                 : "Fallback (\(result.port))"
