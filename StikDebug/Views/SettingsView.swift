@@ -194,8 +194,8 @@ struct SettingsView: View {
                     Link(destination: SettingsLinks.pairingFileGuide) {
                         Label("Pairing File Guide", systemImage: "questionmark.circle")
                     }
-                    Link(destination: SettingsLinks.localDevVPN) {
-                        Label("Download LocalDevVPN", systemImage: "arrow.down.circle")
+                    Button(action: connectLocalDevVPN) {
+                        Label("Connect LocalDevVPN", systemImage: "network")
                     }
                     Link(destination: SettingsLinks.discord) {
                         Label("Discord Support", systemImage: "bubble.left.and.bubble.right")
@@ -315,6 +315,20 @@ struct SettingsView: View {
     }
 
     // MARK: - Business Logic
+
+    private func connectLocalDevVPN() {
+        let callbackScheme = ProcessInfo.processInfo.environment["LC_HOME_PATH"] != nil
+            ? "livecontainer"
+            : "stikdebug"
+        guard let url = URL(string: "localdevvpn://enable?scheme=\(callbackScheme)") else { return }
+        UIApplication.shared.open(url, options: [:]) { opened in
+            if !opened {
+                DispatchQueue.main.async {
+                    UIApplication.shared.open(SettingsLinks.localDevVPN)
+                }
+            }
+        }
+    }
 
     private func openAppFolder() {
         guard let documentsURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else { return }
