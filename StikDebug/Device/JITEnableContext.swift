@@ -8,8 +8,9 @@
 import Foundation
 import idevice
 import Darwin
+import Network
 
-final class RemotePairingPortResolver: NSObject, NetServiceBrowserDelegate, NetServiceDelegate {
+final class RemotePairingPortResolver {
     static let fallback: UInt16 = 49152
     private static let overrideKey = "TunnelRemotePairingPort"
     private static let stateLock = NSLock()
@@ -22,25 +23,28 @@ final class RemotePairingPortResolver: NSObject, NetServiceBrowserDelegate, NetS
         return selectedEndpoint
     }
 
-    private static func record(port: UInt16, source: String) {
-        let endpoint = "\(DeviceConnectionContext.targetIPAddress):\(port) (\(source))"
+    private static func record(targetIPAddress: String, port: UInt16, source: String) {
+        let endpoint = "\(targetIPAddress):\(port) (\(source))"
         stateLock.lock()
         selectedEndpoint = endpoint
         stateLock.unlock()
         NSLog("[StikDebug] Remote Pairing selected endpoint: %@", endpoint)
     }
 
-    private let browser = NetServiceBrowser()
-    private var services: [NetService] = []
+    private let discoveryQueue = DispatchQueue(label: "com.stik.remotePairingDiscovery")
+    private let completion = DispatchSemaphore(value: 0)
+    private var browser: NWBrowser?
+    private var connection: NWConnection?
+    private var selectedService: NWEndpoint?
+    private var selectedLoopback = false
     private var resolvedPort: UInt16?
+    private var finished = false
 
-    /// Resolve on a worker thread with an active run loop. An explicit Settings
-    /// override takes precedence when multicast DNS cannot see the local service.
-    static func resolve(timeout: TimeInterval = 5) -> UInt16 {
+    static func resolve(targetIPAddress: String = DeviceConnectionContext.targetIPAddress, timeout: TimeInterval = 5) -> UInt16 {
         let override = (UserDefaults.standard.string(forKey: overrideKey) ?? "")
             .trimmingCharacters(in: .whitespacesAndNewlines)
         if !override.isEmpty, let port = UInt16(override), port != 0 {
-            record(port: port, source: "Manual")
+            record(targetIPAddress: targetIPAddress, port: port, source: "Manual")
             return port
         }
         if !override.isEmpty {
@@ -48,49 +52,98 @@ final class RemotePairingPortResolver: NSObject, NetServiceBrowserDelegate, NetS
         }
 
         let result = discover(timeout: timeout)
-        record(port: result.port, source: result.source)
+        record(targetIPAddress: targetIPAddress, port: result.port, source: result.source)
         return result.port
     }
 
     static func discover(timeout: TimeInterval = 5) -> (port: UInt16, source: String) {
         let worker = RemotePairingPortResolver()
-        let completion = DispatchSemaphore(value: 0)
-        DispatchQueue.global(qos: .utility).async {
-            worker.search(timeout: timeout)
-            completion.signal()
+        worker.discoveryQueue.async {
+            worker.startDiscovery()
         }
-        guard completion.wait(timeout: .now() + timeout + 1) == .success else {
+        _ = worker.completion.wait(timeout: .now() + timeout)
+        return worker.discoveryQueue.sync {
+            worker.finishDiscovery()
+            if let port = worker.resolvedPort {
+                return (port, "Bonjour")
+            }
             return (fallback, "Fallback")
         }
-        if let port = worker.resolvedPort {
-            return (port, "Bonjour")
-        }
-        return (fallback, "Fallback")
     }
 
-    private func search(timeout: TimeInterval) {
-        browser.delegate = self
-        browser.schedule(in: .current, forMode: .default)
-        browser.searchForServices(ofType: "_remotepairing._tcp.", inDomain: "local.")
-        let deadline = Date().addingTimeInterval(timeout)
-        while resolvedPort == nil && Date() < deadline {
-            _ = RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.1))
-        }
-        browser.stop()
-        services.forEach { $0.stop() }
+    private static func preferredCandidate(
+        from candidates: [(endpoint: NWEndpoint, isLoopback: Bool)]
+    ) -> (endpoint: NWEndpoint, isLoopback: Bool)? {
+        candidates.first(where: { $0.isLoopback }) ?? candidates.first
     }
 
-    func netServiceBrowser(_ browser: NetServiceBrowser, didFind service: NetService, moreComing: Bool) {
-        services.append(service)
-        service.delegate = self
-        service.resolve(withTimeout: 4)
+    private func startDiscovery() {
+        guard !finished else { return }
+        let parameters = NWParameters.tcp
+        parameters.includePeerToPeer = true
+        let browser = NWBrowser(
+            for: .bonjour(type: "_remotepairing._tcp", domain: "local."),
+            using: parameters
+        )
+        self.browser = browser
+        browser.browseResultsChangedHandler = { [weak self] results, _ in
+            guard let self, !self.finished else { return }
+            let candidates = results.compactMap { result -> (endpoint: NWEndpoint, isLoopback: Bool)? in
+                guard case .service = result.endpoint else { return nil }
+                let isLoopback = result.interfaces.contains { $0.name.hasPrefix("lo") }
+                return (result.endpoint, isLoopback)
+            }
+            guard let selected = Self.preferredCandidate(from: candidates),
+                  self.selectedService == nil || (!self.selectedLoopback && selected.isLoopback) else {
+                return
+            }
+            self.selectedService = selected.endpoint
+            self.selectedLoopback = selected.isLoopback
+            self.connection?.cancel()
+            let connection = NWConnection(to: selected.endpoint, using: parameters)
+            self.connection = connection
+            connection.pathUpdateHandler = { [weak self, weak connection] path in
+                guard let self, let connection, self.connection === connection, !self.finished else { return }
+                if path.status == .satisfied {
+                    self.recordResolvedPort(from: connection)
+                }
+            }
+            connection.stateUpdateHandler = { [weak self, weak connection] state in
+                guard let self, let connection, self.connection === connection, !self.finished else { return }
+                switch state {
+                case .ready, .waiting:
+                    self.recordResolvedPort(from: connection)
+                case .failed:
+                    self.finishDiscovery()
+                default:
+                    break
+                }
+            }
+            connection.start(queue: self.discoveryQueue)
+        }
+        browser.stateUpdateHandler = { [weak self] state in
+            if case .failed = state {
+                self?.finishDiscovery()
+            }
+        }
+        browser.start(queue: discoveryQueue)
     }
 
-    func netServiceDidResolveAddress(_ sender: NetService) {
-        if (1...65535).contains(sender.port), resolvedPort == nil {
-            resolvedPort = UInt16(sender.port)
-        }
+    private func recordResolvedPort(from connection: NWConnection) {
+        guard case .hostPort(_, let port) = connection.currentPath?.remoteEndpoint,
+              port.rawValue != 0 else { return }
+        resolvedPort = port.rawValue
+        finishDiscovery()
     }
+
+    private func finishDiscovery() {
+        guard !finished else { return }
+        finished = true
+        browser?.cancel()
+        connection?.cancel()
+        completion.signal()
+    }
+
 }
 
 typealias LogFunc = (String?) -> Void
@@ -254,10 +307,10 @@ final class JITEnableContext {
 
         var addr = sockaddr_in()
         addr.sin_family = sa_family_t(AF_INET)
-        let remotePairingPort = RemotePairingPortResolver.resolve()
+        let deviceIP = DeviceConnectionContext.targetIPAddress
+        let remotePairingPort = RemotePairingPortResolver.resolve(targetIPAddress: deviceIP)
         addr.sin_port = in_port_t(remotePairingPort).bigEndian
 
-        let deviceIP = DeviceConnectionContext.targetIPAddress
         let parseResult = deviceIP.withCString { inet_pton(AF_INET, $0, &addr.sin_addr) }
         guard parseResult == 1 else {
             throw makeError("Failed to parse target IP address.", code: -18)

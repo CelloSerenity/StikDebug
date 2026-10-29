@@ -152,8 +152,13 @@ private func tunnelConnectionLogMessage(for error: NSError) -> String {
 
 private func tunnelConnectionAlertMessage(for error: NSError) -> String {
     """
-    Target attempted: \(RemotePairingPortResolver.lastAttemptDescription)
-
     Code \(error.code): \(error.localizedDescription)
+
+    Troubleshooting:
+    1. Make sure Wi-Fi is connected or Cellular Data is disabled, and LocalDevVPN is enabled.
+    2. Restart your iPhone or iPad, then re-enable LocalDevVPN and try again.
+    3. Generate and place a fresh pairing file using iloader.
+
+    Target attempted: \(RemotePairingPortResolver.lastAttemptDescription)
     """
 }
