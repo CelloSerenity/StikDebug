@@ -2,7 +2,7 @@ name: Build Debug IPA
 
 on:
   push:
-    branches: [ "main" ]
+    branches: [ "**" ]
     tags: [ "[0-9]*" ]
   pull_request:
     branches: [ "main" ]
@@ -14,7 +14,12 @@ permissions:
 jobs:
   build:
     name: Build IPA
-    runs-on: macos-latest
+    if: >-
+      github.event_name != 'push' ||
+      github.ref_type == 'tag' ||
+      github.repository != 'StikDebug/StikDebug' ||
+      github.ref == 'refs/heads/main'
+    runs-on: xcode-27
     outputs:
       version: ${{ steps.version.outputs.version }}
     env:
@@ -27,7 +32,7 @@ jobs:
       - name: 2. Configure Xcode Environment
         uses: maxim-lobanov/setup-xcode@v1
         with:
-          xcode-version: '26.6'
+          xcode-version: '27.1'
 
       - name: 3. Compile Project Archive
         run: |
