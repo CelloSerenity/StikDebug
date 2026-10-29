@@ -146,6 +146,76 @@ final class RemotePairingPortResolver {
 
 }
 
+struct PairingPlacementTarget: Sendable {
+    let pairingFileURL: URL
+    let address: Data
+    let hostname: String
+}
+
+final class PairedDeviceDiscovery: NSObject, NetServiceBrowserDelegate, NetServiceDelegate {
+    private let browser = NetServiceBrowser()
+    private var services: [NetService] = []
+    private let peerHost: String?
+    private var resolvedAddress: Data?
+
+    init(address: Data) {
+        peerHost = Self.numericHost(address)
+        super.init()
+        browser.delegate = self
+        browser.includesPeerToPeer = true
+    }
+
+    static func numericHost(_ address: Data) -> String? {
+        guard address.count >= MemoryLayout<sockaddr>.size else { return nil }
+        return address.withUnsafeBytes { bytes in
+            let socketAddress = bytes.baseAddress!.assumingMemoryBound(to: sockaddr.self)
+            let family = Int32(socketAddress.pointee.sa_family)
+            let length: Int
+            switch family {
+            case AF_INET: length = MemoryLayout<sockaddr_in>.size
+            case AF_INET6: length = MemoryLayout<sockaddr_in6>.size
+            default: return nil
+            }
+            guard address.count >= length else { return nil }
+            var host = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+            guard getnameinfo(socketAddress, socklen_t(length), &host, socklen_t(host.count), nil, 0, NI_NUMERICHOST) == 0 else { return nil }
+            return String(cString: host)
+        }
+    }
+
+    func resolve(timeout: TimeInterval = 8) throws -> Data {
+        guard peerHost != nil else {
+            throw NSError(domain: "StikDebug", code: -18, userInfo: [NSLocalizedDescriptionKey: "The paired device has an invalid network address."])
+        }
+        browser.searchForServices(ofType: "_remotepairing._tcp.", inDomain: "local.")
+        defer {
+            browser.stop()
+            services.forEach { $0.stop() }
+        }
+        let deadline = Date().addingTimeInterval(timeout)
+        while resolvedAddress == nil && Date() < deadline {
+            RunLoop.current.run(until: min(deadline, Date().addingTimeInterval(0.05)))
+        }
+        guard let resolvedAddress else {
+            throw NSError(domain: "StikDebug", code: -19, userInfo: [NSLocalizedDescriptionKey: "Could not discover the paired device. Keep both devices on the same Wi-Fi network and try again."])
+        }
+        return resolvedAddress
+    }
+
+    func netServiceBrowser(_ browser: NetServiceBrowser, didFind service: NetService, moreComing: Bool) {
+        services.append(service)
+        service.includesPeerToPeer = true
+        service.delegate = self
+        service.resolve(withTimeout: 6)
+    }
+
+    func netServiceDidResolveAddress(_ sender: NetService) {
+        if let address = sender.addresses?.first(where: { Self.numericHost($0) == peerHost }) {
+            resolvedAddress = address
+        }
+    }
+}
+
 typealias LogFunc = (String?) -> Void
 typealias DebugAppCallback = (_ pid: Int32, _ debugProxy: OpaquePointer?, _ remoteServer: OpaquePointer?, _ semaphore: DispatchSemaphore) -> Void
 typealias SyslogLineHandler = (String) -> Void
@@ -278,8 +348,8 @@ final class JITEnableContext {
         logger?(message)
     }
 
-    private func getPairingFile() throws -> OpaquePointer {
-        let pairingFileURL = PairingFileStore.prepareURL()
+    private func getPairingFile(at url: URL? = nil) throws -> OpaquePointer {
+        let pairingFileURL = url ?? PairingFileStore.prepareURL()
 
         guard FileManager.default.fileExists(atPath: pairingFileURL.path) else {
             throw makeError("Pairing file not found!", code: -17)
@@ -301,28 +371,37 @@ final class JITEnableContext {
         return pairingFile
     }
 
-    private func createTunnel(hostname: String) throws -> TunnelHandles {
-        let pairingFile = try getPairingFile()
+    private func createTunnel(hostname: String, target: PairingPlacementTarget? = nil) throws -> TunnelHandles {
+        let pairingFile = try getPairingFile(at: target?.pairingFileURL)
         defer { rp_pairing_file_free(pairingFile) }
 
-        var addr = sockaddr_in()
-        addr.sin_family = sa_family_t(AF_INET)
-        let deviceIP = DeviceConnectionContext.targetIPAddress
-        let remotePairingPort = RemotePairingPortResolver.resolve(targetIPAddress: deviceIP)
-        addr.sin_port = in_port_t(remotePairingPort).bigEndian
-
-        let parseResult = deviceIP.withCString { inet_pton(AF_INET, $0, &addr.sin_addr) }
-        guard parseResult == 1 else {
-            throw makeError("Failed to parse target IP address.", code: -18)
+        let address: Data
+        if let target {
+            address = try PairedDeviceDiscovery(address: target.address).resolve()
+        } else {
+            var addr = sockaddr_in()
+            addr.sin_family = sa_family_t(AF_INET)
+            let deviceIP = DeviceConnectionContext.targetIPAddress
+            addr.sin_port = in_port_t(RemotePairingPortResolver.resolve(targetIPAddress: deviceIP)).bigEndian
+            let parseResult = deviceIP.withCString { inet_pton(AF_INET, $0, &addr.sin_addr) }
+            guard parseResult == 1 else {
+                throw makeError("Failed to parse target IP address.", code: -18)
+            }
+            address = withUnsafeBytes(of: &addr) { Data($0) }
         }
 
+        var socketAddress = sockaddr_storage()
+        guard address.count <= MemoryLayout<sockaddr_storage>.size else {
+            throw makeError("Invalid target network address.", code: -18)
+        }
+        withUnsafeMutableBytes(of: &socketAddress) { _ = address.copyBytes(to: $0) }
         var tunnel = TunnelHandles()
-        let ffiError = hostname.withCString { hostname in
-            withUnsafePointer(to: &addr) { pointer in
+        let ffiError = (target?.hostname ?? hostname).withCString { hostname in
+            withUnsafePointer(to: &socketAddress) { pointer in
                 pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
                     tunnel_create_rppairing(
                         $0,
-                        socklen_t(MemoryLayout<sockaddr_in>.stride),
+                        socklen_t(address.count),
                         hostname,
                         pairingFile,
                         nil,
@@ -335,6 +414,7 @@ final class JITEnableContext {
         }
 
         if let ffiError {
+            tunnel.free()
             throw error(from: ffiError, fallback: "Failed to create tunnel")
         }
 
@@ -410,11 +490,12 @@ final class JITEnableContext {
         }
     }
 
-    private func withFreshDebugTunnel<T>(
+    func withFreshDebugTunnel<T>(
         hostname: String,
+        target: PairingPlacementTarget? = nil,
         _ body: (OpaquePointer, OpaquePointer) throws -> T
     ) throws -> T {
-        var tunnel = try createTunnel(hostname: hostname)
+        var tunnel = try createTunnel(hostname: hostname, target: target)
         defer { tunnel.free() }
 
         guard let adapter = tunnel.adapter, let handshake = tunnel.handshake else {

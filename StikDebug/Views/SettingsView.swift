@@ -14,6 +14,7 @@ private enum SettingsLinks {
 }
 
 struct SettingsView: View {
+    @StateObject private var onDevicePairing = OnDevicePairingService.shared
     @AppStorage(UserDefaults.Keys.txmOverride) private var overrideTXMDetection = false
     @AppStorage(UserDefaults.Keys.confirmExternalJITRequests) private var confirmExternalJITRequests = true
     @AppStorage("keepAliveAudio") private var keepAliveAudio = true
@@ -71,6 +72,12 @@ struct SettingsView: View {
                 }
 
                 Section("Pairing File") {
+                    NavigationLink {
+                        OnDevicePairingView(service: onDevicePairing)
+                    } label: {
+                        Label("Pair a Device", systemImage: "iphone.and.arrow.forward")
+                    }
+
                     Button {
                         isShowingPairingFilePicker = true
                     } label: {
