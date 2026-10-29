@@ -291,7 +291,7 @@ final class JITEnableContext {
     private init() {
         var path = Array(IdeviceLogFileManager.logURL.path.utf8CString)
         path.withUnsafeMutableBufferPointer { buffer in
-            _ = idevice_init_logger(Info, Debug, buffer.baseAddress)
+            _ = idevice_init_logger(Info, Disabled, buffer.baseAddress)
         }
     }
 
