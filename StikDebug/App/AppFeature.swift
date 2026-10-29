@@ -13,6 +13,7 @@ enum AppFeature: String, CaseIterable, Identifiable {
     case deviceInfo = "deviceinfo"
     case profiles
     case processes
+    case launchApps = "launchapps"
     case location
     case settings
 
@@ -23,7 +24,7 @@ enum AppFeature: String, CaseIterable, Identifiable {
     var title: String {
         switch self {
         case .home:
-            return "Apps"
+            return "JIT"
         case .scripts:
             return "Scripts"
         case .tools:
@@ -34,6 +35,8 @@ enum AppFeature: String, CaseIterable, Identifiable {
             return "Device Info"
         case .profiles:
             return "App Expiry"
+        case .launchApps:
+            return "Launch Apps"
         case .processes:
             return "Processes"
         case .location:
@@ -46,7 +49,7 @@ enum AppFeature: String, CaseIterable, Identifiable {
     var detail: String {
         switch self {
         case .home:
-            return "Manage installed apps"
+            return "Enable JIT for installed apps"
         case .scripts:
             return "Manage and run JS scripts"
         case .tools:
@@ -57,6 +60,8 @@ enum AppFeature: String, CaseIterable, Identifiable {
             return "View detailed device metadata"
         case .profiles:
             return "Check app expiration dates"
+        case .launchApps:
+            return "Launch installed apps without enabling JIT"
         case .processes:
             return "Inspect running apps"
         case .location:
@@ -78,7 +83,7 @@ enum AppFeature: String, CaseIterable, Identifiable {
     var systemImage: String {
         switch self {
         case .home:
-            return "square.grid.2x2"
+            return "bolt.fill"
         case .scripts:
             return "scroll"
         case .tools:
@@ -89,6 +94,8 @@ enum AppFeature: String, CaseIterable, Identifiable {
             return "iphone.and.arrow.forward"
         case .profiles:
             return "calendar.badge.clock"
+        case .launchApps:
+            return "square.grid.2x2"
         case .processes:
             return "rectangle.stack.person.crop"
         case .location:
@@ -113,6 +120,8 @@ enum AppFeature: String, CaseIterable, Identifiable {
             DeviceInfoView()
         case .profiles:
             ProfileView()
+        case .launchApps:
+            InstalledAppsListView(onSelectApp: { _, _ in }, showDoneButton: false, mode: .launch)
         case .processes:
             ProcessInspectorView()
         case .location:
@@ -125,5 +134,5 @@ enum AppFeature: String, CaseIterable, Identifiable {
 
 extension AppFeature {
     static let mainTabs: [AppFeature] = [.home, .tools, .settings]
-    static let toolList: [AppFeature] = [.scripts, .console, .deviceInfo, .profiles, .processes, .location]
+    static let toolList: [AppFeature] = [.launchApps, .scripts, .console, .deviceInfo, .profiles, .processes, .location]
 }

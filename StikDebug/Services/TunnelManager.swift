@@ -10,7 +10,8 @@ final class TunnelManager: ObservableObject {
 
     @Published private(set) var isConnected = false
 
-    private var isStarting = false
+    @Published private(set) var isStarting = false
+    @Published private(set) var lastError: NSError?
     private var restartPending = false
 
     private init() {}
@@ -43,6 +44,7 @@ final class TunnelManager: ObservableObject {
         let pairingFileURL = PairingFileStore.prepareURL()
         guard FileManager.default.fileExists(atPath: pairingFileURL.path) else {
             isConnected = false
+            lastError = NSError(domain: "StikDebug", code: -17, userInfo: [NSLocalizedDescriptionKey: "Pairing file not found."])
             return
         }
 
@@ -50,6 +52,8 @@ final class TunnelManager: ObservableObject {
             return
         }
 
+        lastError = nil
+        isConnected = false
         isStarting = true
 
         DispatchQueue.global(qos: .userInteractive).async { [showErrorUI] in
@@ -77,10 +81,12 @@ final class TunnelManager: ObservableObject {
 
         switch result {
         case .success:
+            lastError = nil
             isConnected = true
             LogManager.shared.addInfoLog("Tunnel connected successfully")
             mountDeveloperDiskImageIfNeeded()
         case .failure(let error):
+            lastError = error
             isConnected = false
             handleStartFailure(error, showErrorUI: showErrorUI)
         }

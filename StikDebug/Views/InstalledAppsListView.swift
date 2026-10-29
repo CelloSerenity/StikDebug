@@ -13,11 +13,13 @@ struct InstalledAppsListView: View {
     @Environment(\.dismiss) private var dismiss
 
     let onSelectApp: (String, String) -> Void
+    let onEnableByPID: (() -> Void)?
     let showDoneButton: Bool
-    let onImportPairingFile: (() -> Void)?
+    let mode: AppListMode
 
     private let sharedDefaults = UserDefaults(suiteName: ScriptStore.favoriteAppNamesSuiteName) ?? .standard
 
+    @ObservedObject private var tunnel = TunnelManager.shared
     @StateObject private var viewModel = InstalledAppsViewModel()
 
     @AppStorage("recentApps") private var recentApps: [String] = []
@@ -36,7 +38,6 @@ struct InstalledAppsListView: View {
     @State private var debuggableSearchText = ""
     @State private var launchSearchText = ""
     @State private var prefetchedBundleIDs: Set<String> = []
-    @State private var selectedTab: AppListTab = .debuggable
 
     private static let maxFavorites = 4
     private static let maxSystemPins = 8
@@ -44,32 +45,25 @@ struct InstalledAppsListView: View {
 
     init(
         onSelectApp: @escaping (String, String) -> Void,
+        onEnableByPID: (() -> Void)? = nil,
         showDoneButton: Bool = true,
-        onImportPairingFile: (() -> Void)? = nil
+        mode: AppListMode = .debuggable
     ) {
         self.onSelectApp = onSelectApp
+        self.onEnableByPID = onEnableByPID
         self.showDoneButton = showDoneButton
-        self.onImportPairingFile = onImportPairingFile
+        self.mode = mode
     }
 
     var body: some View {
-        NavigationStack {
-            tabContent(for: selectedTab)
-                .transition(.opacity)
-                .transaction { transaction in
-                    transaction.disablesAnimations = true
+        Group {
+            if mode == .debuggable {
+                NavigationStack {
+                    appContent
                 }
-                .navigationTitle(selectedTab.navigationTitle)
-                .searchable(
-                    text: currentSearchBinding,
-                    placement: .navigationBarDrawer(displayMode: .always),
-                    prompt: selectedTab.searchPrompt
-                )
-                .toolbar {
-                    tabPickerToolbarItem
-                    leadingToolbarItem
-                    trailingToolbarItem
-                }
+            } else {
+                appContent
+            }
         }
         .overlay {
             launchFeedbackOverlay
@@ -77,7 +71,6 @@ struct InstalledAppsListView: View {
         .onAppear(perform: refreshIconPrefetch)
         .onChange(of: favoriteApps) { _, _ in prefetchPriorityIcons() }
         .onChange(of: recentApps) { _, _ in prefetchPriorityIcons() }
-        .onChange(of: selectedTab) { _, _ in prefetchPriorityIcons() }
         .onChange(of: pinnedSystemApps) { _, _ in prefetchPriorityIcons() }
         .onChange(of: viewModel.isLoading) { _, isLoading in
             handleLoadingChange(isLoading)
@@ -89,11 +82,25 @@ struct InstalledAppsListView: View {
         }
     }
 
+    private var appContent: some View {
+        tabContent(for: mode)
+            .navigationTitle(mode.navigationTitle)
+            .searchable(
+                text: currentSearchBinding,
+                placement: .navigationBarDrawer(displayMode: .always),
+                prompt: mode.searchPrompt
+            )
+            .toolbar {
+                leadingToolbarItem
+                trailingToolbarItem
+            }
+    }
+
     private var currentSearchBinding: Binding<String> {
         Binding(
-            get: { selectedTab == .debuggable ? debuggableSearchText : launchSearchText },
+            get: { mode == .debuggable ? debuggableSearchText : launchSearchText },
             set: { searchText in
-                if selectedTab == .debuggable {
+                if mode == .debuggable {
                     debuggableSearchText = searchText
                 } else {
                     launchSearchText = searchText
@@ -130,27 +137,16 @@ struct InstalledAppsListView: View {
     }
 
     @ToolbarContentBuilder
-    private var tabPickerToolbarItem: some ToolbarContent {
-        ToolbarItem(placement: .principal) {
-            Picker("", selection: $selectedTab) {
-                ForEach(AppListTab.allCases) { tab in
-                    Text(tab.title.localized).tag(tab)
-                }
-            }
-            .pickerStyle(.segmented)
-            .frame(width: 220)
-        }
-    }
-
-    @ToolbarContentBuilder
     private var leadingToolbarItem: some ToolbarContent {
-        if let onImportPairingFile {
+        if let onEnableByPID {
             ToolbarItem(placement: .navigationBarLeading) {
-                Button(action: onImportPairingFile) {
-                    Image(systemName: "doc.badge.plus")
+                Button(action: onEnableByPID) {
+                    Image(systemName: "number.circle")
                 }
+                .accessibilityLabel("Enable JIT by PID")
             }
         }
+
     }
 
     @ToolbarContentBuilder
@@ -163,11 +159,20 @@ struct InstalledAppsListView: View {
                 .fontWeight(.semibold)
             } else {
                 Button {
-                    viewModel.refreshAppLists()
+                    if tunnel.isConnected {
+                        viewModel.refreshAppLists()
+                    } else {
+                        startTunnelInBackground()
+                    }
                 } label: {
-                    Image(systemName: "arrow.clockwise")
+                    if !viewModel.hasReadApps && (tunnel.isStarting || viewModel.isLoading) {
+                        ProgressView()
+                    } else {
+                        Image(systemName: "arrow.clockwise")
+                    }
                 }
-                .disabled(viewModel.isLoading)
+                .accessibilityLabel("Refresh")
+                .disabled(tunnel.isStarting || viewModel.isLoading)
             }
         }
     }
@@ -192,7 +197,7 @@ struct InstalledAppsListView: View {
     }
 
     @ViewBuilder
-    private func tabContent(for tab: AppListTab) -> some View {
+    private func tabContent(for tab: AppListMode) -> some View {
         switch tab {
         case .debuggable:
             debuggableAppsList
@@ -205,9 +210,9 @@ struct InstalledAppsListView: View {
         let snapshot = debuggableSnapshot
 
         return List {
-            errorSection
+            connectionStatusSection
 
-            if snapshot.apps.isEmpty && !viewModel.isLoading {
+            if snapshot.apps.isEmpty && viewModel.hasConfirmedAppList {
                 EmptyAppListState(
                     systemImage: snapshot.searchIsActive ? "text.magnifyingglass" : "magnifyingglass",
                     title: snapshot.searchIsActive ? "No matching apps".localized : "No JIT Apps Found".localized,
@@ -226,9 +231,9 @@ struct InstalledAppsListView: View {
         let snapshot = launchSnapshot
 
         return List {
-            errorSection
+            connectionStatusSection
 
-            if snapshot.apps.isEmpty {
+            if snapshot.apps.isEmpty && viewModel.hasConfirmedAppList {
                 EmptyAppListState(
                     systemImage: "magnifyingglass",
                     title: snapshot.searchIsActive ? "No matches".localized : "No Apps Found".localized,
@@ -244,12 +249,15 @@ struct InstalledAppsListView: View {
     }
 
     @ViewBuilder
-    private var errorSection: some View {
-        if let error = viewModel.lastError {
+    private var connectionStatusSection: some View {
+        if (!viewModel.hasReadApps && (!viewModel.hasConfirmedAppList || tunnel.isStarting)) ||
+            (!tunnel.isStarting && !viewModel.isLoading && (!tunnel.isConnected || tunnel.lastError != nil || viewModel.lastError != nil)) {
             Section {
-                Text(error)
-                    .font(.footnote)
-                    .foregroundStyle(.orange)
+                DeviceConnectionStatusView(
+                    isReadingApps: viewModel.isLoading && tunnel.isConnected,
+                    hasConfirmedApps: viewModel.hasConfirmedAppList,
+                    errorMessage: viewModel.lastError
+                )
             }
         }
     }
@@ -498,22 +506,9 @@ struct InstalledAppsListView: View {
     }
 }
 
-private enum AppListTab: Int, CaseIterable, Identifiable {
+enum AppListMode {
     case debuggable
     case launch
-
-    var id: Int {
-        rawValue
-    }
-
-    var title: String {
-        switch self {
-        case .debuggable:
-            return "JIT"
-        case .launch:
-            return "Other"
-        }
-    }
 
     var navigationTitle: String {
         switch self {

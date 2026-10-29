@@ -724,6 +724,12 @@ final class LocationSearchCompleter: NSObject, ObservableObject, MKLocalSearchCo
 }
 
 struct LocationSimulationView: View {
+    @ObservedObject private var tunnel = TunnelManager.shared
+    @State private var showConnectedStatus = true
+    @State private var connectionErrorMessage: String?
+    private var isDeviceConnected: Bool {
+        tunnel.isConnected && !tunnel.isStarting && tunnel.lastError == nil && connectionErrorMessage == nil
+    }
     @ObservedObject private var simulationSession = LocationSimulationSession.shared
     @State private var coordinate: CLLocationCoordinate2D?
     @State private var position: MapCameraPosition = .userLocation(fallback: .automatic)
@@ -955,6 +961,22 @@ struct LocationSimulationView: View {
                 .padding(.horizontal, 16)
                 .padding(.horizontal, 16)
             }
+        }
+        .safeAreaInset(edge: .top) {
+            if !isDeviceConnected || showConnectedStatus {
+                DeviceConnectionStatusView(errorMessage: connectionErrorMessage)
+                    .padding(12)
+                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+                    .padding(.horizontal)
+            }
+        }
+        .task(id: isDeviceConnected) {
+            showConnectedStatus = true
+            guard isDeviceConnected else { return }
+            do {
+                try await Task.sleep(for: .seconds(3))
+                showConnectedStatus = false
+            } catch {}
         }
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
@@ -1360,10 +1382,12 @@ struct LocationSimulationView: View {
             DispatchQueue.main.async {
                 isBusy = false
                 if code == 0 {
+                    connectionErrorMessage = nil
                     onSuccess()
                 } else {
                     alertTitle = errorTitle
                     alertMessage = errorMessage(code)
+                    connectionErrorMessage = "Code \(code): \(alertMessage)"
                     showAlert = true
                 }
             }
@@ -1563,6 +1587,7 @@ struct LocationSimulationView: View {
                         }
                         alertTitle = "Route Simulation Failed"
                         alertMessage = "Could not continue route simulation (error \(code))."
+                        connectionErrorMessage = "Code \(code): Could not continue route simulation."
                         showAlert = true
                     }
                     return
