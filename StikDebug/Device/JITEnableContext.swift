@@ -291,7 +291,8 @@ final class JITEnableContext {
     private init() {
         var path = Array(IdeviceLogFileManager.logURL.path.utf8CString)
         path.withUnsafeMutableBufferPointer { buffer in
-            _ = idevice_init_logger(Info, Disabled, buffer.baseAddress)
+            // Debug logging includes pairing-file credentials and protocol payloads.
+            _ = idevice_init_logger(Info, Info, buffer.baseAddress)
         }
     }
 
