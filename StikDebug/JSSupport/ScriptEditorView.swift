@@ -18,6 +18,8 @@ struct ScriptEditorView: View {
 
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.dismiss) private var dismiss
+    private var isReadOnly: Bool { ScriptStore.isBuiltInScript(scriptURL) }
+
     private var editorTheme: Theme {
         colorScheme == .dark ? Theme.defaultDark : Theme.defaultLight
     }
@@ -28,15 +30,25 @@ struct ScriptEditorView: View {
                 .ignoresSafeArea()
 
             VStack(spacing: 0) {
-                CodeEditor(
-                    text:     $scriptContent,
-                    position: $position,
-                    messages: $messages,
-                    language: .none
-                )
-                .font(.system(.footnote, design: .monospaced))
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .environment(\.codeEditorTheme, editorTheme)
+                if isReadOnly {
+                    ScrollView([.horizontal, .vertical]) {
+                        Text(verbatim: scriptContent)
+                            .font(.system(.footnote, design: .monospaced))
+                            .textSelection(.enabled)
+                            .padding()
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    CodeEditor(
+                        text:     $scriptContent,
+                        position: $position,
+                        messages: $messages,
+                        language: .none
+                    )
+                    .font(.system(.footnote, design: .monospaced))
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .environment(\.codeEditorTheme, editorTheme)
+                }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .ignoresSafeArea(edges: .bottom)
@@ -45,10 +57,12 @@ struct ScriptEditorView: View {
         .navigationBarTitleDisplayMode(.inline)
         .onAppear(perform: loadScript)
         .toolbar {
-            ToolbarItem(placement: .confirmationAction) {
-                Button("Save") {
-                    saveScript()
-                    dismiss()
+            if !isReadOnly {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Save") {
+                        saveScript()
+                        dismiss()
+                    }
                 }
             }
         }

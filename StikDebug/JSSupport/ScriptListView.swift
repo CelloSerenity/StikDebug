@@ -68,9 +68,7 @@ struct ScriptListView: View {
                 } else {
                     Section {
                         ForEach(filteredScripts, id: \.self) { script in
-                            let canDelete = !isPickerMode && !ScriptStore.bundledResources.contains {
-                                $0.fileName == script.lastPathComponent
-                            }
+                            let canDelete = !isPickerMode && !ScriptStore.isBuiltInScript(script)
                             scriptRow(script)
                                 .swipeActions(edge: .trailing, allowsFullSwipe: true) {
                                     if canDelete {
@@ -276,18 +274,10 @@ struct ScriptListView: View {
                 }
             }
             do {
-                guard let fileName = ScriptStore.normalizedScriptFileName(fileURL.lastPathComponent) else {
-                    throw CocoaError(.fileReadInvalidFileName)
-                }
-                let directory = try self.scriptsDirectory()
-                let dest = directory.appendingPathComponent(fileName)
-                if FileManager.default.fileExists(atPath: dest.path) {
-                    try FileManager.default.removeItem(at: dest)
-                }
-                try FileManager.default.copyItem(at: fileURL, to: dest)
+                let destination = try ScriptStore.importScript(from: fileURL)
                 DispatchQueue.main.async {
                     self.loadScripts()
-                    self.presentSuccess(title: "Imported", message: fileName)
+                    self.presentSuccess(title: "Imported", message: destination.lastPathComponent)
                 }
             } catch {
                 DispatchQueue.main.async {
