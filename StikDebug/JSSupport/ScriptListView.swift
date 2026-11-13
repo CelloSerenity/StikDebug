@@ -68,9 +68,12 @@ struct ScriptListView: View {
                 } else {
                     Section {
                         ForEach(filteredScripts, id: \.self) { script in
+                            let canDelete = !isPickerMode && !ScriptStore.bundledResources.contains {
+                                $0.fileName == script.lastPathComponent
+                            }
                             scriptRow(script)
                                 .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-                                    if !isPickerMode {
+                                    if canDelete {
                                         Button(role: .destructive) {
                                             pendingDelete = script
                                             showDeleteConfirmation = true
@@ -85,9 +88,14 @@ struct ScriptListView: View {
                                         Label("Copy Path", systemImage: "folder")
                                     }
                                     if !isPickerMode {
+                                        ShareLink(item: script) {
+                                            Label("Export", systemImage: "square.and.arrow.up")
+                                        }
                                         Button { saveDefaultScript(script) } label: {
                                             Label("Set Default", systemImage: "star")
                                         }
+                                    }
+                                    if canDelete {
                                         Divider()
                                         Button(role: .destructive) {
                                             pendingDelete = script
