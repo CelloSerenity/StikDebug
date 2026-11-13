@@ -6,6 +6,7 @@
 //
 
 import SwiftUI
+import UIKit
 
 struct ProcessInspectorView: View {
     @StateObject private var viewModel = ProcessInspectorViewModel()
@@ -234,7 +235,7 @@ private struct ProcessRow: View {
                 Text(process.displayName)
                     .font(.subheadline.weight(.semibold))
                 Spacer()
-                Text("PID \(process.pid)")
+                Text(process.pidLabel)
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
@@ -256,6 +257,17 @@ private struct ProcessRow: View {
                         .tint(.accentColor)
                 } else {
                     HStack(spacing: 8) {
+                        Button {
+                            UIPasteboard.general.string = String(process.pid)
+                            AccessibilityAnnouncer.announce("PID copied".localized)
+                        } label: {
+                            Label("Copy PID", systemImage: "doc.on.doc")
+                                .font(.title3)
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                        .labelStyle(.iconOnly)
+
                         Button {
                             onResumeTap(process)
                         } label: {

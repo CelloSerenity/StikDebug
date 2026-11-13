@@ -27,6 +27,7 @@ struct ScriptListView: View {
     @State private var showDeleteConfirmation = false
     @State private var pendingDelete: URL? = nil
 
+    var allowsNoScript = true
     var onSelectScript: ((URL?) -> Void)? = nil
 
     private var isPickerMode: Bool { onSelectScript != nil }
@@ -40,7 +41,7 @@ struct ScriptListView: View {
     var body: some View {
         NavigationStack {
             List {
-                if isPickerMode {
+                if isPickerMode && allowsNoScript {
                     Section {
                         Button {
                             onSelectScript?(nil)
@@ -58,7 +59,7 @@ struct ScriptListView: View {
                                 systemImage: "doc.text.magnifyingglass"
                             )
                             .foregroundStyle(.secondary)
-                            Text(isPickerMode ? "Import a file or choose None." : "Tap New or Import to get started.")
+                            Text(isPickerMode ? (allowsNoScript ? "Import a file or choose None." : "Import a script file.") : "Tap New or Import to get started.")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }

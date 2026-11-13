@@ -507,7 +507,7 @@ private struct PIDJITConfigurationView: View {
     let onEnable: (Int, URL?) -> Void
 
     @State private var pidText = ""
-    @State private var selectedScriptURL: URL?
+    @State private var scriptSelection: (url: URL, suggestedPID: Int?)?
     @State private var isShowingScriptPicker = false
 
     private var pid: Int? {
@@ -515,6 +515,12 @@ private struct PIDJITConfigurationView: View {
             return nil
         }
         return value
+    }
+
+    private var selectedScriptURL: URL? {
+        guard let scriptSelection,
+              scriptSelection.suggestedPID == nil || scriptSelection.suggestedPID == pid else { return nil }
+        return scriptSelection.url
     }
 
     var body: some View {
@@ -526,6 +532,9 @@ private struct PIDJITConfigurationView: View {
                     Text("Enter the process identifier of a currently running app.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                    NavigationLink("Choose Running Process") {
+                        PIDProcessPicker(onSelect: selectProcess)
+                    }
                 }
 
                 Section("Script (Optional)") {
@@ -541,7 +550,7 @@ private struct PIDJITConfigurationView: View {
 
                     if selectedScriptURL != nil {
                         Button("Remove Script", role: .destructive) {
-                            selectedScriptURL = nil
+                            scriptSelection = nil
                         }
                     }
 
@@ -570,11 +579,169 @@ private struct PIDJITConfigurationView: View {
                 }
             }
             .sheet(isPresented: $isShowingScriptPicker) {
-                ScriptListView { scriptURL in
-                    selectedScriptURL = scriptURL
+                ScriptListView(allowsNoScript: false) { scriptURL in
+                    scriptSelection = scriptURL.map { (url: $0, suggestedPID: nil) }
                     isShowingScriptPicker = false
                 }
             }
+        }
+    }
+
+    private func selectProcess(_ choice: PIDProcessPicker.Choice) {
+        pidText = String(choice.process.pid)
+        if scriptSelection?.suggestedPID != nil {
+            scriptSelection = nil
+        }
+        guard ProcessInfo.processInfo.hasTXM, let bundleID = choice.bundleID else { return }
+
+        if let assignedName = ScriptStore.assignedScriptName(for: bundleID),
+           let url = try? ScriptStore.scriptURL(named: assignedName),
+           FileManager.default.isReadableFile(atPath: url.path) {
+            scriptSelection = (url, choice.process.pid)
+        } else if #available(iOS 26, *),
+                  let appName = choice.appName,
+                  let resource = ScriptStore.autoScriptResource(for: appName),
+                  let url = try? ScriptStore.scriptURL(named: resource.fileName),
+                  FileManager.default.isReadableFile(atPath: url.path) {
+            scriptSelection = (url, choice.process.pid)
+        }
+    }
+}
+
+private struct PIDProcessPicker: View {
+    struct Choice: Identifiable {
+        let process: ProcessInfoEntry
+        let appName: String?
+        let bundleID: String?
+
+        var id: Int { process.pid }
+        var title: String { appName ?? process.processName }
+    }
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var choices: [Choice]?
+    @State private var searchText = ""
+    @State private var isLoading = false
+    @State private var loadError: String?
+
+    let onSelect: (Choice) -> Void
+
+    private var filteredChoices: [Choice] {
+        let choices = choices ?? []
+        guard !searchText.isEmpty else { return choices }
+        return choices.filter {
+            $0.title.localizedCaseInsensitiveContains(searchText) ||
+            $0.process.processName.localizedCaseInsensitiveContains(searchText) ||
+            String($0.process.pid).contains(searchText)
+        }
+    }
+
+    var body: some View {
+        let visibleChoices = filteredChoices
+        List {
+            if let loadError {
+                Text(loadError)
+                    .foregroundStyle(.secondary)
+                Button("Try Again") { Task { await loadProcesses() } }
+            } else if choices != nil && visibleChoices.isEmpty {
+                Text("No matching processes.")
+                    .foregroundStyle(.secondary)
+            } else {
+                ForEach(visibleChoices) { choice in
+                    Button {
+                        onSelect(choice)
+                        dismiss()
+                    } label: {
+                        HStack {
+                            Text(choice.title)
+                            Spacer()
+                            Text(choice.process.pidLabel)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .fixedSize()
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+        .overlay {
+            if choices == nil && loadError == nil {
+                VStack(spacing: 8) {
+                    ProgressView()
+                    Text("Loading Processes…")
+                        .foregroundStyle(.secondary)
+                }
+                .accessibilityElement(children: .combine)
+            }
+        }
+        .navigationTitle("Running Processes")
+        .navigationBarTitleDisplayMode(.inline)
+        .searchable(text: $searchText)
+        .task {
+            while !Task.isCancelled {
+                await loadProcesses()
+                do {
+                    try await Task.sleep(for: .seconds(10))
+                } catch {
+                    break
+                }
+            }
+        }
+        .refreshable { await loadProcesses() }
+    }
+
+    private func loadProcesses() async {
+        guard !isLoading else { return }
+        isLoading = true
+        defer { isLoading = false }
+        do {
+            let loaded = try await Task.detached(priority: .utility) {
+                let context = JITEnableContext.shared
+                let processes = try context.fetchProcessList().compactMap(ProcessInfoEntry.init(dictionary:))
+                let apps = (try? context.getDebuggableAppProcessNames()) ?? []
+                return processes.compactMap { process -> Choice? in
+                    guard process.pid > 0, process.pid <= Int(Int32.max) else { return nil }
+                    let path = process.executablePath
+                    let decodedPath = path.removingPercentEncoding ?? path
+                    let executablePath = (decodedPath as NSString).standardizingPath
+                    let components = decodedPath.lowercased().split(separator: "/").map {
+                        let component = String($0)
+                        if component.hasSuffix(".app") || component.hasSuffix(".appex") {
+                            return (component as NSString).deletingPathExtension
+                        }
+                        return component
+                    }
+                    let isLiveContainer = decodedPath.localizedCaseInsensitiveContains("livecontainer")
+                    let pathMatches = apps.filter { app in
+                        guard let appPath = app.path, !appPath.isEmpty else { return false }
+                        let bundlePath = (appPath as NSString).standardizingPath
+                        return executablePath.hasPrefix(bundlePath + "/")
+                    }
+                    let matches = pathMatches.isEmpty ? apps.filter { app in
+                        components.contains(app.name.lowercased()) ||
+                            components.contains(app.bundleID.lowercased()) ||
+                            app.executable.map { components.contains($0.lowercased()) } == true
+                    } : pathMatches
+                    guard isLiveContainer || !matches.isEmpty else { return nil }
+                    let match = matches.count == 1 ? matches.first : nil
+                    return Choice(
+                        process: process,
+                        appName: match?.name,
+                        bundleID: match?.bundleID
+                    )
+                }.sorted {
+                    let order = $0.title.localizedStandardCompare($1.title)
+                    return order == .orderedSame ? $0.id < $1.id : order == .orderedAscending
+                }
+            }.value
+            guard !Task.isCancelled else { return }
+            choices = loaded
+            loadError = nil
+        } catch {
+            guard !Task.isCancelled else { return }
+            loadError = error.localizedDescription
         }
     }
 }

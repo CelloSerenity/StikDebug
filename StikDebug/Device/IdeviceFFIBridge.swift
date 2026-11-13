@@ -575,6 +575,16 @@ extension JITEnableContext {
         }
     }
 
+    func getDebuggableAppProcessNames() throws -> [(bundleID: String, name: String, executable: String?, path: String?)] {
+        try IdeviceBridge.withTunnelHandles(for: self) { adapter, handshake in
+            try IdeviceBridge.plistDictionaries(adapter: adapter, handshake: handshake).compactMap { app in
+                guard IdeviceBridge.hasGetTaskAllow(app),
+                      let bundleID = app["CFBundleIdentifier"] as? String, !bundleID.isEmpty else { return nil }
+                return (bundleID, IdeviceBridge.appName(from: app), app["CFBundleExecutable"] as? String, app["Path"] as? String)
+            }
+        }
+    }
+
     func getHiddenSystemApps() throws -> [String: String] {
         try IdeviceBridge.withTunnelHandles(for: self) { adapter, handshake in
             try IdeviceBridge.appDictionary(
@@ -721,6 +731,10 @@ struct ProcessInfoEntry: Identifiable {
     }
 
     var id: Int { pid }
+
+    var pidLabel: String {
+        String(format: "PID %lld".localized, Int64(pid))
+    }
 
     var executablePath: String {
         rawPath.replacingOccurrences(of: "file://", with: "")
