@@ -8,6 +8,7 @@
 import SwiftUI
 import CodeEditorView
 import LanguageSupport
+import UIKit
 
 struct ScriptEditorView: View {
     let scriptURL: URL
@@ -31,23 +32,9 @@ struct ScriptEditorView: View {
 
             VStack(spacing: 0) {
                 if isReadOnly {
-                    ScrollView([.horizontal, .vertical]) {
-                        Text(verbatim: scriptContent)
-                            .font(.system(.footnote, design: .monospaced))
-                            .textSelection(.enabled)
-                            .padding()
-                    }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    ReadOnlyCodeEditor(content: editor)
                 } else {
-                    CodeEditor(
-                        text:     $scriptContent,
-                        position: $position,
-                        messages: $messages,
-                        language: .none
-                    )
-                    .font(.system(.footnote, design: .monospaced))
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .environment(\.codeEditorTheme, editorTheme)
+                    editor
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -70,11 +57,53 @@ struct ScriptEditorView: View {
         .toolbar(.hidden, for: .tabBar)
     }
 
+    private var editor: some View {
+        CodeEditor(
+            text:     $scriptContent,
+            position: $position,
+            messages: $messages,
+            language: .none
+        )
+        .font(.system(.footnote, design: .monospaced))
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .environment(\.codeEditorTheme, editorTheme)
+    }
+
     private func loadScript() {
         scriptContent = (try? String(contentsOf: scriptURL)) ?? ""
     }
 
     private func saveScript() {
         try? scriptContent.write(to: scriptURL, atomically: true, encoding: .utf8)
+    }
+}
+
+private struct ReadOnlyCodeEditor<Content: View>: UIViewControllerRepresentable {
+    let content: Content
+
+    func makeUIViewController(context: Context) -> ReadOnlyEditorHost<Content> {
+        ReadOnlyEditorHost(rootView: content)
+    }
+
+    func updateUIViewController(_ controller: ReadOnlyEditorHost<Content>, context: Context) {
+        controller.rootView = content
+    }
+}
+
+private final class ReadOnlyEditorHost<Content: View>: UIHostingController<Content> {
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        lockEditing(in: view)
+    }
+
+    private func lockEditing(in view: UIView) {
+        if let textView = view as? UITextView {
+            // CodeEditorView does not expose an editability setting.
+            textView.isEditable = false
+            return
+        }
+        for subview in view.subviews {
+            lockEditing(in: subview)
+        }
     }
 }
